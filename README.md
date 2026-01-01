@@ -1,5 +1,8 @@
 # I. Project Structure & Key Features
 
+- **Project Structure**
+
+```bash
 Go-Blockchain-KYC/
 ├── main.go                    # Application entry point
 ├── go.mod                     # Go module file
@@ -39,8 +42,9 @@ Go-Blockchain-KYC/
 │   └── responses.go           # Response helpers
 |__ utils/
     └── utils.go               # Utility functions
+```
 
-+ **Key Features**
+- **Key Features**
 
 | Feature | Description |
 |---|---|
@@ -58,7 +62,7 @@ Go-Blockchain-KYC/
 
 Initialize Go module and download dependencies
 ```bash
-# go mod init Go-Blockchain-KYC
+go mod init Go-Blockchain-KYC
 go mod tidy
 ```
 
@@ -75,7 +79,7 @@ You will see this TUI:
 ## 2. Postman: To Work and Verify
 ### Create Environments & Collections
 
-+ Open Postman and Create:
+Open Postman and Create:
 
 - Environments
 ![POSTMAN - Create Environment](/images/postman-1.png)
@@ -86,14 +90,14 @@ You will see this TUI:
 
 ### Configure the Request to Verify Server Access
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/auth/login |
 
-+ Set Header
+Set Header
 
 - Click on "Headers" tab
 - Add the following header:
@@ -102,7 +106,7 @@ You will see this TUI:
 |---|---|
 | `Content-Type` | application/json |
 
-+ Set Request Body
+Set Request Body
 
 - Click on "Body" tab
 - Select "raw"
@@ -116,7 +120,7 @@ You will see this TUI:
 }
 ```
 
-+ Send Request
+Send Request
 
 - Click the "Send" button (blue button)
 - You should receive a response like this:
@@ -143,7 +147,7 @@ You will see this TUI:
 ### Create A New Bank & KYC
 #### Create Bank
 
-+ Login Username as Admin (Not Bank Admin): To get token
+Login Username as Admin (Not Bank Admin): To get token
 
 - Pass this script below to **Scripts**, so that it create Environment Variable:
     - access_token
@@ -161,7 +165,7 @@ pm.environment.set("access_token", accessToken);
 pm.environment.set("refresh_token", refreshToken);
 ```
 
-+ Add New Request: Set Header
+Add New Request: Set Header
 
 - Create or Duplicate the new request
 - Go to **Headers** & Add
@@ -171,14 +175,14 @@ pm.environment.set("refresh_token", refreshToken);
 | `Content-Type` | application/json |
 | `Authorization` | Bearer {{access_token}} |
 
-+ Set Request: Create A Bank
+Set Request: Create A Bank
 
 | Setting | Value |
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/banks |
 
-+ Set Request Body
+Set Request Body
 
 - Click on "Body" tab
 - Select "raw"
@@ -211,16 +215,16 @@ pm.environment.set("refresh_token", refreshToken);
 
 #### Create KYC
 
-+ First, you can Duplicate Request from Request **Login Admin**
+First, you can Duplicate Request from Request **Login Admin**
 
-+ Then, you need to login as a bank user. Since admin doesn't have a bank_id, let's use bank_admin:
+Then, you need to login as a bank user. Since admin doesn't have a bank_id, let's use bank_admin:
 
 | Setting | Value |
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/auth/login |
 
-+ Set Request Body (JSON)
+Set Request Body (JSON)
 
 ```json
 {
@@ -229,24 +233,24 @@ pm.environment.set("refresh_token", refreshToken);
 }
 ```
 
-+ Set Header : Like above admin to the **Scripts**
+Set Header : Like above admin to the **Scripts**
 
 -----
 
-+ Set Request: Create A KYC
+Set Request: Create A KYC
 
 | Setting | Value |
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/kyc |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
 | `Authorization` | Bearer {{access_token}} |
 
-+ Set Request Body (JSON)
+Set Request Body (JSON)
 
 ```json
 {
@@ -280,14 +284,14 @@ pm.environment.set("refresh_token", refreshToken);
 
 When you create a KYC, it first goes to pending transactions (not yet in a block).
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | GET |
 | `URL` | http://localhost:8080/api/v1/blockchain/pending |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
@@ -302,14 +306,14 @@ To add pending transactions to the blockchain, you need to **mine a block**:
 
 ⚠️ **NOTE:** This time Login as Admin; Otherwise, will error insufficient permission
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/blockchain/mine |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
@@ -320,14 +324,14 @@ To add pending transactions to the blockchain, you need to **mine a block**:
 
 #### Check Blockchain Stats
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | GET |
 | `URL` | http://localhost:8080/api/v1/blockchain/stats |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
@@ -338,14 +342,14 @@ To add pending transactions to the blockchain, you need to **mine a block**:
 
 #### View All Blocks
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | GET |
 | `URL` | http://localhost:8080/api/v1/blockchain/blocks |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
@@ -356,14 +360,14 @@ To add pending transactions to the blockchain, you need to **mine a block**:
 
 #### Validate Blockchain Integrity
 
-+ Set Request
+Set Request
 
 | Setting | Value |
 |---|---|
 | `Method` | GET |
 | `URL` | http://localhost:8080/api/v1/blockchain/validate |
 
-+ Set Header
+Set Header
 
 | Key | Value |
 |---|---|
