@@ -1,0 +1,46 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "read_timeout": 15000000000,
+    "write_timeout":  15000000000,
+    "tls_cert_file": "",
+    "tls_key_file": ""
+  },
+  "database":  {
+    "driver": "postgres",
+    "host": "localhost",
+    "port": 5432,
+    "user": "postgres",
+    "password": "111222333",
+    "db_name": "kyc_blockchain",
+    "ssl_mode":  "disable",
+    "max_open_conns": 25,
+    "max_idle_conns": 5,
+    "conn_max_lifetime": 300
+  },
+  "jwt": {
+    "secret_key": "your-super-secret-key-change-in-production-min-32-chars",
+    "token_expiry": 86400000000000,
+    "refresh_expiry": 604800000000000,
+    "issuer": "kyc-blockchain"
+  },
+  "crypto": {
+    "algorithm": "ECDSA",
+    "key_size": 256,
+    "aes_key_size": 32,
+    "key_store_path": "./keys"
+  },
+  "consensus":  {
+    "type": "pbft",
+    "node_id": "node1",
+    "nodes": ["node1", "node2", "node3", "node4"],
+    "election_timeout": 150000000,
+    "heartbeat_interval":  50000000
+  },
+  "blockchain": {
+    "difficulty": 2,
+    "max_tx_per_block": 100,
+    "block_interval": 10
+  }
+}
