@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -156,19 +157,28 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 		user.BankID,
 	)
 
+	// Save to blockchain memory (NOT to pending transactions)
 	err := h.blockchain.CreateKYC(kycData, user.BankID, user.ID)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
+	// Save to database
 	if h.storage != nil {
 		h.storage.SaveKYC(kycData)
 	}
 
-	SendCreated(w, "KYC created successfully", map[string]interface{}{
-		"customer_id": customerID,
-		"status":      kycData.Status,
+	// SendCreated(w, "KYC created successfully", map[string]interface{}{
+	// 	"customer_id": customerID,
+	// 	"status":      kycData.Status,
+	// })
+
+	SendCreated(w, "KYC created successfully - pending verification", map[string]interface{}{
+		"customer_id":   customerID,
+		"status":        kycData.Status,
+		"on_blockchain": false,
+		"message":       "KYC saved to database.  Must be VERIFIED before adding to blockchain.",
 	})
 }
 
@@ -193,10 +203,20 @@ func (h *Handlers) GetKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	SendSuccess(w, "", kyc)
+	// Add blockchain status info
+	response := map[string]interface{}{
+		"kyc_data":      kyc,
+		"on_blockchain": kyc.IsOnBlockchain(),
+		"can_modify":    kyc.CanModify(),
+		"can_verify":    kyc.CanVerify(),
+	}
+
+	SendSuccess(w, "", response)
+
+	// SendSuccess(w, "", kyc)
 }
 
-// UpdateKYC updates a KYC record
+// UpdateKYC updates a KYC record - Only allowed for non-verified KYC
 func (h *Handlers) UpdateKYC(w http.ResponseWriter, r *http.Request) {
 	user, ok := GetUserFromContext(r)
 	if !ok {
@@ -219,12 +239,20 @@ func (h *Handlers) UpdateKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get existing KYC
 	kyc, err := h.blockchain.ReadKYC(req.CustomerID, true)
 	if err != nil {
 		SendNotFound(w, err.Error())
 		return
 	}
 
+	// Check if can modify
+	if !kyc.CanModify() {
+		SendBadRequest(w, "cannot update verified KYC - already on blockchain")
+		return
+	}
+
+	// Update fields
 	if req.FirstName != "" {
 		kyc.FirstName = req.FirstName
 	}
@@ -247,10 +275,21 @@ func (h *Handlers) UpdateKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	SendSuccess(w, "KYC updated successfully", kyc)
+	// Update in database
+	if h.storage != nil {
+		h.storage.SaveKYC(kyc)
+	}
+
+	SendSuccess(w, "KYC updated successfully", map[string]interface{}{
+		"customer_id":   kyc.CustomerID,
+		"status":        kyc.Status,
+		"on_blockchain": kyc.IsOnBlockchain(),
+	})
+
+	// SendSuccess(w, "KYC updated successfully", kyc)
 }
 
-// VerifyKYC verifies a KYC record
+// VerifyKYC verifies a KYC record - This creates blockchain transaction
 func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	user, ok := GetUserFromContext(r)
 	if !ok {
@@ -267,18 +306,51 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
+	// Get existing KYC to check status
+	kyc, err := h.blockchain.ReadKYC(req.CustomerID, false)
+	if err != nil {
+		SendNotFound(w, err.Error())
+		return
+	}
+
+	if !kyc.CanVerify() {
+		SendBadRequest(w, fmt.Sprintf("cannot verify KYC with status:  %s", kyc.Status))
+		return
+	}
+
+	// This will create transaction and add to pending
+	err = h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
-	h.blockchain.MineBlock()
+	// Update in database
+	kyc.Status = models.StatusVerified
+	if h.storage != nil {
+		h.storage.SaveKYC(kyc)
+	}
 
-	SendSuccess(w, "KYC verified successfully", nil)
+	SendSuccess(w, "KYC verified - transaction created for blockchain", map[string]interface{}{
+		"customer_id":       req.CustomerID,
+		"status":            models.StatusVerified,
+		"on_blockchain":     false,
+		"pending_for_block": true,
+		"message":           "KYC verified.  Transaction added to pending pool.  Mine a block to add to blockchain.",
+	})
+
+	// err := h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
+	// if err != nil {
+	// 	SendBadRequest(w, err.Error())
+	// 	return
+	// }
+
+	// h.blockchain.MineBlock()
+
+	// SendSuccess(w, "KYC verified successfully", nil)
 }
 
-// RejectKYC rejects a KYC record
+// RejectKYC rejects a KYC record - Only updates status, no blockchain
 func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
 	user, ok := GetUserFromContext(r)
 	if !ok {
@@ -302,9 +374,24 @@ func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.blockchain.MineBlock()
+	// Update in database
+	if h.storage != nil {
+		kyc, _ := h.blockchain.ReadKYC(req.CustomerID, false)
+		if kyc != nil {
+			h.storage.SaveKYC(kyc)
+		}
+	}
 
-	SendSuccess(w, "KYC rejected", nil)
+	SendSuccess(w, "KYC rejected - NOT added to blockchain", map[string]interface{}{
+		"customer_id":   req.CustomerID,
+		"status":        models.StatusRejected,
+		"on_blockchain": false,
+		"reason":        req.Reason,
+	})
+
+	// h.blockchain.MineBlock()
+
+	// SendSuccess(w, "KYC rejected", nil)
 }
 
 // DeleteKYC deletes a KYC record
@@ -331,9 +418,19 @@ func (h *Handlers) DeleteKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.blockchain.MineBlock()
+	// Delete from database
+	if h.storage != nil {
+		h.storage.DeleteKYC(req.CustomerID)
+	}
 
-	SendSuccess(w, "KYC deleted successfully", nil)
+	SendSuccess(w, "KYC deleted successfully", map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"message":     "KYC was not on blockchain, deleted from database only",
+	})
+
+	// h.blockchain.MineBlock()
+
+	// SendSuccess(w, "KYC deleted successfully", nil)
 }
 
 // ListKYC lists all KYC records with optional filters

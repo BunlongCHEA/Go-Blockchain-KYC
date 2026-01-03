@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"Go-Blockchain-KYC/crypto"
 )
@@ -144,11 +145,14 @@ func (bc *Blockchain) processTransaction(tx *Transaction) {
 	}
 }
 
-// CreateKYC creates a new KYC record
+// CreateKYC creates a new KYC record - ONLY saves to memory/database, NOT to pending transactions
 func (bc *Blockchain) CreateKYC(kycData *KYCData, bankID, userID string) error {
-	bc.mutex.RLock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	// bc.mutex.RLock()
 	_, exists := bc.KYCRecords[kycData.CustomerID]
-	bc.mutex.RUnlock()
+	// bc.mutex.RUnlock()
 
 	if exists {
 		return errors.New("KYC record already exists for this customer")
@@ -161,8 +165,13 @@ func (bc *Blockchain) CreateKYC(kycData *KYCData, bankID, userID string) error {
 		}
 	}
 
-	tx := CreateKYCTransaction(kycData, bankID, userID)
-	return bc.AddTransaction(tx)
+	// Only save to KYCRecords (memory/database), NOT to pending transactions
+	// Transaction will be created only when KYC is VERIFIED
+	bc.KYCRecords[kycData.CustomerID] = kycData
+	return nil
+
+	// tx := CreateKYCTransaction(kycData, bankID, userID)
+	// return bc.AddTransaction(tx)
 }
 
 // ReadKYC retrieves a KYC record by customer ID
@@ -188,14 +197,23 @@ func (bc *Blockchain) ReadKYC(customerID string, decrypt bool) (*KYCData, error)
 	return &kycCopy, nil
 }
 
-// UpdateKYC updates an existing KYC record
+// UpdateKYC updates an existing KYC record - Updates KYC in memory/database only (no transaction)
 func (bc *Blockchain) UpdateKYC(kycData *KYCData, bankID, userID, description string) error {
-	bc.mutex.RLock()
-	_, exists := bc.KYCRecords[kycData.CustomerID]
-	bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
+	// bc.mutex.RLock()
+	// _, exists := bc.KYCRecords[kycData.CustomerID]
+	// bc.mutex.RUnlock()
+
+	existing, exists := bc.KYCRecords[kycData.CustomerID]
 	if !exists {
 		return errors.New("KYC record not found")
+	}
+
+	// Cannot update if already verified (already on blockchain)
+	if existing.Status == StatusVerified {
+		return errors.New("cannot update verified KYC - already on blockchain")
 	}
 
 	// Encrypt sensitive data
@@ -205,64 +223,164 @@ func (bc *Blockchain) UpdateKYC(kycData *KYCData, bankID, userID, description st
 		}
 	}
 
-	tx := UpdateKYCTransaction(kycData, bankID, userID, description)
-	return bc.AddTransaction(tx)
+	// Update in memory only
+	bc.KYCRecords[kycData.CustomerID] = kycData
+	return nil
+
+	// tx := UpdateKYCTransaction(kycData, bankID, userID, description)
+	// return bc.AddTransaction(tx)
 }
 
-// DeleteKYC marks a KYC record for deletion
+// DeleteKYC marks a KYC record for deletion - Only allowed for non-verified KYC
 func (bc *Blockchain) DeleteKYC(customerID, bankID, userID, reason string) error {
-	bc.mutex.RLock()
-	_, exists := bc.KYCRecords[customerID]
-	bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
+	// bc.mutex.RLock()
+	// _, exists := bc.KYCRecords[customerID]
+	// bc.mutex.RUnlock()
+
+	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	tx := DeleteKYCTransaction(customerID, bankID, userID, reason)
-	return bc.AddTransaction(tx)
+	// Cannot delete if already verified (on blockchain)
+	if kyc.Status == StatusVerified {
+		return errors.New("cannot delete verified KYC - already on blockchain")
+	}
+
+	// Delete from memory only
+	delete(bc.KYCRecords, customerID)
+	return nil
+
+	// tx := DeleteKYCTransaction(customerID, bankID, userID, reason)
+	// return bc.AddTransaction(tx)
 }
 
-// VerifyKYC verifies a customer's KYC
+// VerifyKYC verifies a customer's KYC - ONLY this creates a transaction for blockchain
 func (bc *Blockchain) VerifyKYC(customerID, bankID, userID string) error {
-	bc.mutex.RLock()
-	_, exists := bc.KYCRecords[customerID]
-	bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
+	// bc.mutex.RLock()
+	// _, exists := bc.KYCRecords[customerID]
+	// bc.mutex.RUnlock()
+
+	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	tx := VerifyKYCTransaction(customerID, bankID, userID)
-	return bc.AddTransaction(tx)
+	// Check current status
+	if kyc.Status == StatusVerified {
+		return errors.New("KYC already verified")
+	}
+
+	if kyc.Status == StatusRejected {
+		return errors.New("cannot verify rejected KYC")
+	}
+
+	if kyc.Status == StatusExpired {
+		return errors.New("cannot verify expired KYC")
+	}
+
+	// Update status to VERIFIED
+	kyc.Verify(bankID)
+
+	// NOW create transaction for blockchain (only for VERIFIED status)
+	tx := CreateKYCTransaction(kyc, bankID, userID)
+
+	// Validate bank authorization
+	bank, bankExists := bc.Banks[bankID]
+	if !bankExists || !bank.IsActive {
+		return errors.New("unauthorized or inactive bank")
+	}
+
+	// Add to pending transactions (will go to blockchain when mined)
+	bc.PendingTxs = append(bc.PendingTxs, tx)
+
+	return nil
+
+	// tx := VerifyKYCTransaction(customerID, bankID, userID)
+	// return bc.AddTransaction(tx)
 }
 
-// RejectKYC rejects a customer's KYC
+// RejectKYC rejects a customer's KYC - Only updates status, NO blockchain transaction
 func (bc *Blockchain) RejectKYC(customerID, bankID, userID, reason string) error {
-	bc.mutex.RLock()
-	_, exists := bc.KYCRecords[customerID]
-	bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
+	// bc.mutex.RLock()
+	// _, exists := bc.KYCRecords[customerID]
+	// bc.mutex.RUnlock()
+
+	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	tx := RejectKYCTransaction(customerID, bankID, userID, reason)
-	return bc.AddTransaction(tx)
+	if kyc.Status == StatusVerified {
+		return errors.New("cannot reject verified KYC - already on blockchain")
+	}
+
+	// Update status only - NO transaction created
+	kyc.Status = StatusRejected
+	kyc.UpdatedAt = time.Now().Unix()
+
+	return nil
+
+	// tx := RejectKYCTransaction(customerID, bankID, userID, reason)
+	// return bc.AddTransaction(tx)
 }
 
-// SuspendKYC suspends a customer's KYC
+// SuspendKYC suspends a customer's KYC - Only updates status, NO blockchain transaction
 func (bc *Blockchain) SuspendKYC(customerID, bankID, userID, reason string) error {
-	bc.mutex.RLock()
-	_, exists := bc.KYCRecords[customerID]
-	bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
+	// bc.mutex.RLock()
+	// _, exists := bc.KYCRecords[customerID]
+	// bc.mutex.RUnlock()
+
+	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	tx := SuspendKYCTransaction(customerID, bankID, userID, reason)
-	return bc.AddTransaction(tx)
+	if kyc.Status == StatusVerified {
+		return errors.New("cannot suspend verified KYC - already on blockchain")
+	}
+
+	// Update status only - NO transaction created
+	kyc.Status = StatusSuspended
+	kyc.UpdatedAt = time.Now().Unix()
+
+	return nil
+
+	// tx := SuspendKYCTransaction(customerID, bankID, userID, reason)
+	// return bc.AddTransaction(tx)
+}
+
+// ExpireKYC - Only updates status, NO blockchain transaction
+func (bc *Blockchain) ExpireKYC(customerID string) error {
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	kyc, exists := bc.KYCRecords[customerID]
+	if !exists {
+		return errors.New("KYC record not found")
+	}
+
+	if kyc.Status == StatusVerified {
+		return errors.New("cannot expire verified KYC - already on blockchain")
+	}
+
+	// Update status only - NO transaction created
+	kyc.Status = StatusExpired
+	kyc.UpdatedAt = time.Now().Unix()
+
+	return nil
 }
 
 // GetAllKYCRecords returns all KYC records

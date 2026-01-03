@@ -88,7 +88,7 @@ Open Postman and Create:
 ![POSTMAN - Create Collections with **Add request**](/images/postman-2.png)
 
 
-### Configure the Request to Verify Server Access
+### Configure the Request to Verify Server Access by Login as Admin
 
 Set Request
 
@@ -120,6 +120,24 @@ Set Request Body
 }
 ```
 
+Set Scripts
+
+Pass this script below to **Scripts**, so that it create Environment Variable:
+    - access_token
+    - refresh_token
+
+```bash
+// Set global variable - token - and call on Headers as Authorization Bearer
+var response = pm.response.json();
+
+var accessToken = response.data.access_token;
+var refreshToken = response.data.refresh_token;
+
+// save as environment variables
+pm.environment.set("access_token", accessToken);
+pm.environment.set("refresh_token", refreshToken);
+```
+
 Send Request
 
 - Click the "Send" button (blue button)
@@ -145,35 +163,51 @@ Send Request
 
 
 ### Create A New Bank & KYC
-#### Create Bank
 
-Login Username as Admin (Not Bank Admin): To get token
+Before start, you must login or remain as **admin** to create bank due to permission requirement
 
-- Pass this script below to **Scripts**, so that it create Environment Variable:
-    - access_token
-    - refresh_token
-
-```bash
-// Set global variable - token - and call on Headers as Authorization Bearer
-var response = pm.response.json();
-
-var accessToken = response.data.access_token;
-var refreshToken = response.data.refresh_token;
-
-// save as environment variables
-pm.environment.set("access_token", accessToken);
-pm.environment.set("refresh_token", refreshToken);
+```json
+{
+    "username": "admin",
+    "password": "admin123"
+}
 ```
 
-Add New Request: Set Header
+Then you can Duplicate Request from Request **Login Admin**
 
-- Create or Duplicate the new request
-- Go to **Headers** & Add
+Then, you need to login as a bank user. Since admin doesn't have a bank_id, let's use bank_admin:
+
+Set Request
+
+| Setting | Value |
+|---|---|
+| `Method` | POST |
+| `URL` | http://localhost:8080/api/v1/auth/login |
+
+Set Header
+
+- Click on "Headers" tab
+- Add the following header:
 
 | Key | Value |
 |---|---|
 | `Content-Type` | application/json |
-| `Authorization` | Bearer {{access_token}} |
+
+Set Request Body (JSON)
+
+```json
+{
+    "username": "bank_admin",
+    "password": "bank123"
+}
+```
+
+#### Create Bank
+
+Add a New Request:
+
+- Create or Duplicate the new request
+- Go to **Headers** & Add
 
 Set Request: Create A Bank
 
@@ -181,6 +215,13 @@ Set Request: Create A Bank
 |---|---|
 | `Method` | POST |
 | `URL` | http://localhost:8080/api/v1/banks |
+
+Set Header:
+
+| Key | Value |
+|---|---|
+| `Content-Type` | application/json |
+| `Authorization` | Bearer {{access_token}} |
 
 Set Request Body
 
@@ -213,29 +254,7 @@ Set Request Body
 
 ⚠️ Save the id (e.g., BANK1a2b3c4d) - you'll need it for the next step!
 
-#### Create KYC
-
-First, you can Duplicate Request from Request **Login Admin**
-
-Then, you need to login as a bank user. Since admin doesn't have a bank_id, let's use bank_admin:
-
-| Setting | Value |
-|---|---|
-| `Method` | POST |
-| `URL` | http://localhost:8080/api/v1/auth/login |
-
-Set Request Body (JSON)
-
-```json
-{
-    "username": "bank_admin",
-    "password": "bank123"
-}
-```
-
-Set Header : Like above admin to the **Scripts**
-
------
+#### Create KYC (Status: PENDING)
 
 Set Request: Create A KYC
 
@@ -278,9 +297,16 @@ Set Request Body (JSON)
 
 ⚠️ Save the customer_id for verification!
 
+READ KYC (Check Status) with ⚠️ saved customer_id
 
-### Verify - Is Block/Blockchain Created?
-#### Check Pending Transactions
+| Setting | Value |
+|---|---|
+| `Method` | GET |
+| `URL` | http://localhost:8080/api/v1/kyc?customer_id=CUSa1b2c3d4e5f6 |
+
+![POSTMAN - Output Checking KYC, but statue remain PENDING](/images/postman-4_1.png)
+
+#### Check Pending Transactions (Should be Empty)
 
 When you create a KYC, it first goes to pending transactions (not yet in a block).
 
@@ -298,7 +324,56 @@ Set Header
 | `Authorization` | Bearer {{access_token}} |
 
 - Expected Response:
-![POSTMAN - Output Success for verify KYC, but statue remain PENDING](/images/postman-5.png)
+![POSTMAN - Output Success for verify KYC, but remain Empty block as KYC not Verified yet](/images/postman-5.png)
+
+#### VERIFY KYC (Creates Transaction)
+
+Set Request
+
+| Setting | Value |
+|---|---|
+| `Method` | POST |
+| `URL` | http://localhost:8080/api/v1/kyc/verify |
+
+Set Header
+
+| Key | Value |
+|---|---|
+| `Authorization` | Bearer {{access_token}} |
+
+Set Request Body (JSON)
+⚠️ Use customer_id for verification to **"VERIFIED"**
+
+```json
+{
+    "customer_id": "CUSa1b2c3d4e5f6"
+}
+```
+
+- Expected Response:
+![POSTMAN - Output Success for verify KYC, Status VERIFIED](/images/postman-5_1.png)
+
+![POSTGRES - Output Database verify KYC to status VERIFIED](/images/postman-5_2.png)
+
+
+### Verify - Is Block/Blockchain Created?
+#### Check Pending Transactions (NOW Should be Created Block)
+
+Set Request
+
+| Setting | Value |
+|---|---|
+| `Method` | GET |
+| `URL` | http://localhost:8080/api/v1/blockchain/pending |
+
+Set Header
+
+| Key | Value |
+|---|---|
+| `Authorization` | Bearer {{access_token}} |
+
+- Expected Response:
+![POSTMAN - Output Success to KYC data for Block](/images/postman-5_3.png)
 
 #### Mine a Block (Add Transactions to Blockchain)
 
@@ -406,3 +481,37 @@ Set Header
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+
+
+
+
+
+### UPDATE KYC (While PENDING) & Create Block After Success Verified
+
+Set Request:
+
+| Setting | Value |
+|---|---|
+| `Method` | PUT |
+| `URL` | http://localhost:8080/api/v1/kyc |
+
+Set Header
+
+| Key | Value |
+|---|---|
+| `Authorization` | Bearer {{access_token}} |
+
+Set Request Body (JSON)
+```json
+{
+    "customer_id": "CUSa1b2c3d4e5f6",
+    "first_name": "Test",
+    "last_name": "Test Update",
+    "phone": "+85599999999",
+    "description": "Updated phone number"
+}
+```
+
+- Expected Response:
+![POSTMAN - Output Success Created KYC, but statue remain PENDING](/images/postman-4.png)

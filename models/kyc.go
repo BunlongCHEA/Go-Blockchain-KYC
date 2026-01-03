@@ -176,3 +176,18 @@ func KYCDataFromJSON(data []byte) (*KYCData, error) {
 	err := json.Unmarshal(data, &kyc)
 	return &kyc, err
 }
+
+// CanModify checks if KYC can be modified (not yet on blockchain)
+func (k *KYCData) CanModify() bool {
+	return k.Status != StatusVerified
+}
+
+// CanVerify checks if KYC can be verified
+func (k *KYCData) CanVerify() bool {
+	return k.Status == StatusPending
+}
+
+// IsOnBlockchain checks if KYC is on blockchain
+func (k *KYCData) IsOnBlockchain() bool {
+	return k.Status == StatusVerified
+}
