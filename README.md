@@ -326,6 +326,11 @@ Set Header
 - Expected Response:
 ![POSTMAN - Output Success for verify KYC, but remain Empty block as KYC not Verified yet](/images/postman-5.png)
 
+**This mean KYC cannot allow to mine yet, while remain PENDING status, it requires to VERIFY KYC First**
+
+- Expected Response:
+![POSTMAN - Output Error, KYC PENDING status, so no pending transaction to mine](/images/postman-5_4.png)
+
 #### VERIFY KYC (Creates Transaction)
 
 Set Request
@@ -452,41 +457,74 @@ Set Header
 ![POSTMAN - Output Validate Blockchain Integrity](/images/postman-9.png)
 
 
-# Summary Logic:
+# III. Summary Logic:
 
 ```bash
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        BLOCKCHAIN FLOW                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  1. CREATE KYC                                                      │
-│     ↓                                                               │
-│  ┌─────────────────────────────────────┐                           │
-│  │     PENDING TRANSACTIONS            │  ← Transaction created    │
-│  │     - KYC Create (CUS1a2b3c4d)      │                           │
-│  └─────────────────────────────────────┘                           │
-│     ↓                                                               │
-│  2. MINE BLOCK                                                      │
-│     ↓                                                               │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                     BLOCKCHAIN                               │   │
-│  │                                                              │   │
-│  │  ┌──────────┐      ┌──────────────────────────────────┐     │   │
-│  │  │ Block 0  │ ───► │ Block 1                          │     │   │
-│  │  │ (Genesis)│      │ - TX: KYC Create (CUS1a2b3c4d)   │     │   │
-│  │  │ Hash: 000a│      │ - PrevHash: 000a                 │     │   │
-│  │  └──────────┘      │ - Hash: 000e                     │     │   │
-│  │                    └──────────────────────────────────┘     │   │
-│  └─────────────────────────────────────────────────────────────┘   │
+│  1. LOGIN ──────────────────────► Get Token                         │
 │                                                                     │
+│  2. CREATE KYC ─────────────────► Status: PENDING                   │
+│                                         Saved to:  Database Only    │
+│                                         Blockchain: ❌              │
+│                                                                     │
+│  3. READ KYC ───────────────────► can_modify: true                  │
+│                                         can_verify: true            │
+│                                         on_blockchain: false        │
+│                                                                     │
+│  4. UPDATE KYC ─────────────────► Status: PENDING                   │
+│                                         Updated in:  Database Only  │
+│                                                                     │
+│  5. CHECK PENDING ──────────────► Empty []                          │
+│                                                                     │
+│  6. VERIFY KYC ─────────────────► Status: VERIFIED                  │
+│                                         Transaction Created ✅      │
+│                                                                     │
+│  7. CHECK PENDING ──────────────► Has Transaction                   │
+│     ↓                                                               │
+│  ┌─────────────────────────────────────┐                            │
+│  │     PENDING TRANSACTIONS            │  ← Transaction created     │
+│  │     - KYC Create (CUS1a2b3c4d)      │                            │
+│  └─────────────────────────────────────┘                            │
+│     ↓                                                               |
+│  8. MINE BLOCK ─────────────────► Block Created ✅                  │
+│                                   Added to Blockchain ✅            │
+│     ↓                                                               │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                     BLOCKCHAIN                              │    │
+│  │                                                             │    │
+│  │  ┌──────────┐      ┌──────────────────────────────────┐     │    │
+│  │  │ Block 0  │ ───► │ Block 1                          │     │    │
+│  │  │ (Genesis)│      │ - TX: KYC Create (CUS1a2b3c4d)   │     │    │
+│  │  │ Hash: 000a│     │ - PrevHash: 000a                 │     │    │
+│  │  └──────────┘      │ - Hash: 000e                     │     │    │
+│  │                    └──────────────────────────────────┘     │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│  9. VERIFY ─────────────────────► total_blocks: 2                   │
+│                                   is_valid: true                    │
+│                                                                     │
+│  10.TRY UPDATE ─────────────────► FAILED ❌                         │
+│                                   "already on blockchain"           │
+│                                                                     │
+│  11.TRY DELETE ─────────────────► FAILED ❌                         │
+│                                   "already on blockchain"           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**Comparison: PENDING vs VERIFIED**
+
+| Status     | Saved to DB | Transaction Created | Can Mine | Goes to Blockchain |
+|------------|-------------|---------------------|----------|--------------------|
+| `PENDING`  | ✅ Yes      | ❌ No               | ❌ No    | ❌ No              |
+| `VERIFIED` | ✅ Yes      | ✅ Yes              | ✅ Yes   | ✅ Yes             |
+| `REJECTED` | ✅ Yes      | ❌ No               | ❌ No    | ❌ No              |
+| `SUSPENDED`| ✅ Yes      | ❌ No               | ❌ No    | ❌ No              |
 
 
 
-
-
+# IV. Other API
 ### UPDATE KYC (While PENDING) & Create Block After Success Verified
 
 Set Request:
@@ -512,6 +550,3 @@ Set Request Body (JSON)
     "description": "Updated phone number"
 }
 ```
-
-- Expected Response:
-![POSTMAN - Output Success Created KYC, but statue remain PENDING](/images/postman-4.png)
