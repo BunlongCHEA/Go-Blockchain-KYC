@@ -67,6 +67,11 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermKYCReject)(
 				http.HandlerFunc(handlers.RejectKYC))))
 
+	mux.Handle("POST /api/v1/kyc/auto-verify",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCVerify)(
+				http.HandlerFunc(handlers.AutoVerifyKYC))))
+
 	// Bank Routes
 	mux.Handle("POST /api/v1/banks",
 		middleware.Authenticate(

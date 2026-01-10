@@ -42,5 +42,15 @@
     "difficulty": 2,
     "max_tx_per_block": 100,
     "block_interval": 10
+  },
+  "verification": {
+    "enabled": true,
+    "auto_approve": true,
+    "min_score": 80.0,
+    "provider":  "didit",
+    "didit_client_id": "your_didit_client_id",
+    "didit_client_secret": "your_didit_client_secret",
+    "onfido_api_key": "your_onfido_api_key",
+    "trulioo_api_key":  "your_trulioo_api_key"
   }
 }

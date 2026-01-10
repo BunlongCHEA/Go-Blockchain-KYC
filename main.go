@@ -12,6 +12,7 @@ import (
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/storage"
+	"Go-Blockchain-KYC/verification"
 )
 
 func main() {
@@ -77,13 +78,18 @@ func main() {
 		log.Printf("   ✓ %s consensus initialized", cfg.Consensus.Type)
 	}
 
+	// Initialize verification service
+	log.Println("\n8. Initializing Identity Verification Service...")
+	verificationService := initializeVerification(cfg)
+	log.Println("   ✓ Verification service initialized")
+
 	// Setup demo data
 	log.Println("\n6. Setting Up Demo Data...")
 	setupDemoData(blockchain, authService, keyManager)
 
 	// Start API server
 	log.Println("\n7. Starting REST API Server...")
-	server := api.NewServer(cfg, blockchain, authService, store)
+	server := api.NewServer(cfg, blockchain, authService, store, verificationService)
 
 	fmt.Println()
 	fmt.Println("==============================================")
@@ -102,6 +108,7 @@ func main() {
 	fmt.Println("  DELETE /api/v1/kyc               - Delete KYC")
 	fmt.Println("  GET    /api/v1/kyc/list          - List KYC records")
 	fmt.Println("  POST   /api/v1/kyc/verify        - Verify KYC")
+	fmt.Println("  POST   /api/v1/kyc/auto-verify   - Auto Verify KYC with Third-Party Provider")
 	fmt.Println("  POST   /api/v1/kyc/reject        - Reject KYC")
 	fmt.Println()
 	fmt.Println("  POST   /api/v1/banks             - Register bank")
@@ -214,6 +221,66 @@ func initializeConsensus(cfg *config.Config) consensus.Consensus {
 	}
 
 	return consensus.NewConsensus(consensusConfig)
+}
+
+func initializeVerification(cfg *config.Config) *verification.VerificationService {
+	verificationConfig := verification.VerificationConfig{
+		AutoApprove: true,
+		MinScore:    80.0,
+	}
+
+	service := verification.NewVerificationService(verificationConfig)
+
+	// Check which provider to use
+	switch cfg.Verification.Provider {
+	case "didit":
+		// Use Didit as primary provider
+		if cfg.Verification.DiditClientID != "" {
+			diditProvider := verification.NewDiditProvider(verification.DiditConfig{
+				ClientID:     cfg.Verification.DiditClientID,
+				ClientSecret: cfg.Verification.DiditSecret,
+			})
+			service.AddProvider(diditProvider)
+			service.SetPrimaryProvider(diditProvider)
+			log.Println("   ✓ Didit provider configured")
+		}
+	case "mock":
+		// Use mock provider for development/testing
+		provider := verification.NewMockProvider(verification.MockConfig{
+			SimulateDelay: true,
+			RandomResults: false,
+		})
+		service.AddProvider(provider)
+		log.Println("   ✓ Mock provider configured (development mode)")
+	case "onfido":
+		// Add Onfido provider (if API key configured)
+		if cfg.Verification.OnfidoAPIKey != "" {
+			onfidoProvider := verification.NewOnfidoProvider(verification.OnfidoConfig{
+				APIKey: cfg.Verification.OnfidoAPIKey,
+			})
+			service.AddProvider(onfidoProvider)
+			log.Println("   ✓ Onfido provider configured (fallback)")
+		}
+	case "trulioo":
+		// Add Trulioo provider (if API key configured)
+		if cfg.Verification.TruliooAPIKey != "" {
+			truliooProvider := verification.NewTruliooProvider(verification.TruliooConfig{
+				APIKey: cfg.Verification.TruliooAPIKey,
+			})
+			service.AddProvider(truliooProvider)
+			log.Println("   ✓ Trulioo provider configured (fallback)")
+		}
+	default:
+		// Default to mock for development
+		provider := verification.NewMockProvider(verification.MockConfig{
+			SimulateDelay: true,
+			RandomResults: false,
+		})
+		service.AddProvider(provider)
+		log.Println("   ✓ Mock provider configured (default)")
+	}
+
+	return service
 }
 
 // setupDemoData creates demo banks and users

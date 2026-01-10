@@ -8,12 +8,13 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server     ServerConfig     `json:"server"`
-	Database   DatabaseConfig   `json:"database"`
-	JWT        JWTConfig        `json:"jwt"`
-	Crypto     CryptoConfig     `json:"crypto"`
-	Consensus  ConsensusConfig  `json:"consensus"`
-	Blockchain BlockchainConfig `json:"blockchain"`
+	Server       ServerConfig       `json:"server"`
+	Database     DatabaseConfig     `json:"database"`
+	JWT          JWTConfig          `json:"jwt"`
+	Crypto       CryptoConfig       `json:"crypto"`
+	Consensus    ConsensusConfig    `json:"consensus"`
+	Blockchain   BlockchainConfig   `json:"blockchain"`
+	Verification VerificationConfig `json:"verification"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -70,6 +71,17 @@ type BlockchainConfig struct {
 	Difficulty    int `json:"difficulty"`
 	MaxTxPerBlock int `json:"max_tx_per_block"`
 	BlockInterval int `json:"block_interval"`
+}
+
+type VerificationConfig struct {
+	Enabled       bool    `json:"enabled"`
+	AutoApprove   bool    `json:"auto_approve"`
+	MinScore      float64 `json:"min_score"`
+	Provider      string  `json:"provider"` // "didit", "onfido", "trulioo"
+	DiditClientID string  `json:"didit_client_id"`
+	DiditSecret   string  `json:"didit_client_secret"`
+	OnfidoAPIKey  string  `json:"onfido_api_key"`
+	TruliooAPIKey string  `json:"trulioo_api_key"`
 }
 
 // DefaultConfig returns default configuration

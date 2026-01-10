@@ -11,6 +11,9 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// Global placeholder for encrypted strings
+var encryptedStringPlaceholder = "[ENCRYPTED]"
+
 // PostgresStorage implements Storage interface for PostgreSQL
 type PostgresStorage struct {
 	db *sql.DB
@@ -593,9 +596,9 @@ func (p *PostgresStorage) GetKYC(customerID string) (*models.KYCData, error) {
 			Phone:    phone,
 			KeyID:    keyID.String,
 		}
-		kyc.IDNumber = "[ENCRYPTED]"
-		kyc.Email = "[ENCRYPTED]"
-		kyc.Phone = "[ENCRYPTED]"
+		kyc.IDNumber = encryptedStringPlaceholder
+		kyc.Email = encryptedStringPlaceholder
+		kyc.Phone = encryptedStringPlaceholder
 	} else {
 		kyc.IDNumber = idNumber
 		kyc.Email = email
@@ -729,9 +732,9 @@ func (p *PostgresStorage) scanKYCRecords(rows *sql.Rows) ([]*models.KYCData, err
 				Phone:    phone,
 				KeyID:    keyID.String,
 			}
-			kyc.IDNumber = "[ENCRYPTED]"
-			kyc.Email = "[ENCRYPTED]"
-			kyc.Phone = "[ENCRYPTED]"
+			kyc.IDNumber = encryptedStringPlaceholder
+			kyc.Email = encryptedStringPlaceholder
+			kyc.Phone = encryptedStringPlaceholder
 		} else {
 			kyc.IDNumber = idNumber
 			kyc.Email = email

@@ -11,23 +11,26 @@ import (
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/utils"
+	"Go-Blockchain-KYC/verification"
 )
 
 // Handlers holds all HTTP handlers
 type Handlers struct {
-	blockchain  *models.Blockchain
-	authService *auth.AuthService
-	storage     storage.Storage
-	rbac        *auth.RBAC
+	blockchain          *models.Blockchain
+	authService         *auth.AuthService
+	storage             storage.Storage
+	rbac                *auth.RBAC
+	verificationService *verification.VerificationService
 }
 
 // NewHandlers creates a new handlers instance
-func NewHandlers(blockchain *models.Blockchain, authService *auth.AuthService, storage storage.Storage, rbac *auth.RBAC) *Handlers {
+func NewHandlers(blockchain *models.Blockchain, authService *auth.AuthService, storage storage.Storage, rbac *auth.RBAC, verificationService *verification.VerificationService) *Handlers {
 	return &Handlers{
-		blockchain:  blockchain,
-		authService: authService,
-		storage:     storage,
-		rbac:        rbac,
+		blockchain:          blockchain,
+		authService:         authService,
+		storage:             storage,
+		rbac:                rbac,
+		verificationService: verificationService,
 	}
 }
 
@@ -107,6 +110,94 @@ func (h *Handlers) GetProfile(w http.ResponseWriter, r *http.Request) {
 		"bank_id":    user.BankID,
 		"created_at": user.CreatedAt,
 		"last_login": user.LastLogin,
+	})
+}
+
+// =========== Auto-Verify KYC Handlers =================
+
+// Auto-verify KYC using external API
+func (h *Handlers) AutoVerifyKYC(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	// Get KYC data
+	kyc, err := h.blockchain.ReadKYC(req.CustomerID, true)
+	if err != nil {
+		SendNotFound(w, err.Error())
+		return
+	}
+
+	// Check if already verified
+	if kyc.Status == models.StatusVerified {
+		SendBadRequest(w, "KYC already verified")
+		return
+	}
+
+	// Call verification service
+	result, err := h.verificationService.VerifyKYC(kyc)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("verification failed: %v", err))
+		return
+	}
+
+	// Update KYC status based on result
+	switch result.Status {
+	case models.StatusVerified:
+		// Auto-approve:  Create transaction for blockchain
+		err = h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
+		if err != nil {
+			SendBadRequest(w, err.Error())
+			return
+		}
+
+	case models.StatusRejected:
+		err = h.blockchain.RejectKYC(req.CustomerID, user.BankID, user.ID, result.Reason)
+		if err != nil {
+			SendBadRequest(w, err.Error())
+			return
+		}
+
+	case models.StatusSuspended:
+		err = h.blockchain.SuspendKYC(req.CustomerID, user.BankID, user.ID, result.Reason)
+		if err != nil {
+			SendBadRequest(w, err.Error())
+			return
+		}
+	}
+
+	// Update in database
+	kyc.Status = result.Status
+	kyc.RiskLevel = result.RiskLevel
+	if h.storage != nil {
+		h.storage.SaveKYC(kyc)
+	}
+
+	SendSuccess(w, "Auto-verification completed", map[string]interface{}{
+		"customer_id":      req.CustomerID,
+		"status":           result.Status,
+		"verified":         result.Verified,
+		"score":            result.Score,
+		"document_valid":   result.DocumentValid,
+		"face_match":       result.FaceMatch,
+		"aml_check":        result.AMLCheck,
+		"pep_check":        result.PEPCheck,
+		"risk_level":       result.RiskLevel,
+		"reason":           result.Reason,
+		"provider_ref":     result.ProviderRef,
+		"on_blockchain":    result.Status == models.StatusVerified,
+		"pending_for_mine": result.Status == models.StatusVerified,
 	})
 }
 

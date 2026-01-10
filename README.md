@@ -461,7 +461,7 @@ Set Header
 
 ```bash
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        BLOCKCHAIN FLOW                              │
+│                 BLOCKCHAIN FLOW ( Manual Verify KYC )               │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  1. LOGIN ──────────────────────► Get Token                         │
@@ -513,6 +513,49 @@ Set Header
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**Otherwise, if KYC's status still PENDING, will error to mine Block to Blockchain**
+
+```bash
+┌─────────────────────────────────────────────────────────────────┐
+│                    PENDING KYC                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  CREATE KYC (PENDING)                                           │
+│       │                                                         │
+│       ▼                                                         │
+│  ┌─────────────────────┐                                        │
+│  │  PostgreSQL (DB)    │  ✅ Saved here                         │
+│  │  - KYC Data         │                                        │
+│  │  - Status:  PENDING │                                        │
+│  └─────────────────────┘                                        │
+│                                                                 │
+│       ❌ NO transaction created                                 │
+│                                                                 │
+│  ┌─────────────────────┐                                        │
+│  │  Pending Pool       │  Empty []                              │
+│  │  (No transactions)  │                                        │
+│  └─────────────────────┘                                        │
+│                                                                 │
+│       │                                                         │
+│       ▼  TRY MINE                                               │
+│                                                                 │
+│  ┌─────────────────────┐                                        │
+│  │  MINE BLOCK         │  ❌ FAILED                             │
+│  │  "no pending        │  "no pending transactions to mine"     │
+│  │   transactions"     │                                        │
+│  └─────────────────────┘                                        │
+│                                                                 │
+│  ┌─────────────────────┐                                        │
+│  │  BLOCKCHAIN         │                                        │
+│  │  ┌────────────┐     │                                        │
+│  │  │ Block 0    │     │  Only genesis block                    │
+│  │  │ (Genesis)  │     │  No new block added                    │
+│  │  └────────────┘     │                                        │
+│  └─────────────────────┘                                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 **Comparison: PENDING vs VERIFIED**
 
 | Status     | Saved to DB | Transaction Created | Can Mine | Goes to Blockchain |
@@ -522,6 +565,50 @@ Set Header
 | `REJECTED` | ✅ Yes      | ❌ No               | ❌ No    | ❌ No              |
 | `SUSPENDED`| ✅ Yes      | ❌ No               | ❌ No    | ❌ No              |
 
+**Auto Verification KYC, with Didit Provider or other Provider**
+
+```bash
+┌─────────────────────────────────────────────────────────────────────┐
+│                    DIDIT VERIFICATION FLOW                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. Call /api/v1/kyc/auto-verify                                    │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  DIDIT API                                                   │   │
+│  │                                                              │   │
+│  │  Step 1: Authenticate (OAuth2)                               │   │
+│  │       │                                                      │   │
+│  │       ▼                                                      │   │
+│  │  Step 2: Create Session                                      │   │
+│  │       │                                                      │   │
+│  │       ▼                                                      │   │
+│  │  Step 3: Submit KYC Data                                     │   │
+│  │       │                                                      │   │
+│  │       ▼                                                      │   │
+│  │  Step 4: Didit Performs Checks:                              │   │
+│  │       ├── Document Verification (OCR)                        │   │
+│  │       ├── Face Match                                         │   │
+│  │       ├── AML/PEP/Sanctions Check                            │   │
+│  │       └── Risk Scoring                                       │   │
+│  │       │                                                      │   │
+│  │       ▼                                                      │   │
+│  │  Step 5: Return Decision                                     │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  AUTO-DETERMINE STATUS                                       │   │
+│  │                                                              │   │
+│  │  Decision: "approved"  ────► VERIFIED ───► Blockchain ✅     │   │
+│  │  Decision: "declined"  ────► REJECTED ───► DB Only ❌        │   │
+│  │  Decision: "review"    ────► PENDING ────► Manual Review     │   │
+│  │  PEP/Sanctions Hit     ────► SUSPENDED ──► DB Only ❌        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 
 # IV. Other API
