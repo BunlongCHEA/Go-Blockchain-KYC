@@ -1,11 +1,14 @@
 package crypto
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -23,16 +26,19 @@ const (
 
 // KeyPair holds a public-private key pair
 type KeyPair struct {
-	Type       KeyType
-	PrivateKey interface{}
-	PublicKey  interface{}
+	Type          KeyType
+	PrivateKey    interface{}
+	PublicKey     interface{}
+	PublicKeyPEM  string // PEM encoded public key for sharing
+	PrivateKeyPEM string // PEM encoded private key
 }
 
 // KeyManager handles key generation and storage
 type KeyManager struct {
-	keyStorePath string
-	algorithm    KeyType
-	keySize      int
+	keyStorePath  string
+	algorithm     KeyType
+	keySize       int
+	systemKeyPair *KeyPair // Cached system key pair
 }
 
 // NewKeyManager creates a new key manager
@@ -54,14 +60,28 @@ func NewKeyManager(storePath string, algorithm string, keySize int) *KeyManager 
 
 // GenerateKeyPair generates a new key pair based on configured algorithm
 func (km *KeyManager) GenerateKeyPair() (*KeyPair, error) {
+	var keyPair *KeyPair
+	var err error
+
 	switch km.algorithm {
 	case KeyTypeRSA:
-		return km.generateRSAKeyPair()
+		keyPair, err = km.generateRSAKeyPair()
 	case KeyTypeECDSA:
-		return km.generateECDSAKeyPair()
+		keyPair, err = km.generateECDSAKeyPair()
 	default:
 		return nil, errors.New("unsupported algorithm")
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate PEM strings
+	if err := km.generatePEMStrings(keyPair); err != nil {
+		return nil, err
+	}
+
+	return keyPair, nil
 }
 
 // generateRSAKeyPair generates an RSA key pair
@@ -104,6 +124,80 @@ func (km *KeyManager) generateECDSAKeyPair() (*KeyPair, error) {
 		PrivateKey: privateKey,
 		PublicKey:  &privateKey.PublicKey,
 	}, nil
+}
+
+// generatePEMStrings generates PEM encoded strings for the key pair
+func (km *KeyManager) generatePEMStrings(keyPair *KeyPair) error {
+	// Generate public key PEM
+	pubPEM, err := km.PublicKeyToPEM(keyPair)
+	if err != nil {
+		return err
+	}
+	keyPair.PublicKeyPEM = pubPEM
+
+	// Generate private key PEM
+	privPEM, err := km.PrivateKeyToPEM(keyPair)
+	if err != nil {
+		return err
+	}
+	keyPair.PrivateKeyPEM = privPEM
+
+	return nil
+}
+
+// PublicKeyToPEM converts public key to PEM string
+func (km *KeyManager) PublicKeyToPEM(keyPair *KeyPair) (string, error) {
+	var pubBytes []byte
+	var pemType string
+
+	switch keyPair.Type {
+	case KeyTypeRSA:
+		pubBytes = x509.MarshalPKCS1PublicKey(keyPair.PublicKey.(*rsa.PublicKey))
+		pemType = "RSA PUBLIC KEY"
+	case KeyTypeECDSA:
+		var err error
+		pubBytes, err = x509.MarshalPKIXPublicKey(keyPair.PublicKey.(*ecdsa.PublicKey))
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal ECDSA public key: %w", err)
+		}
+		pemType = "PUBLIC KEY"
+	default:
+		return "", errors.New("unsupported key type")
+	}
+
+	pemBlock := &pem.Block{
+		Type:  pemType,
+		Bytes: pubBytes,
+	}
+
+	return string(pem.EncodeToMemory(pemBlock)), nil
+}
+
+// PrivateKeyToPEM converts private key to PEM string
+func (km *KeyManager) PrivateKeyToPEM(keyPair *KeyPair) (string, error) {
+	var pemBlock *pem.Block
+
+	switch keyPair.Type {
+	case KeyTypeRSA:
+		privBytes := x509.MarshalPKCS1PrivateKey(keyPair.PrivateKey.(*rsa.PrivateKey))
+		pemBlock = &pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: privBytes,
+		}
+	case KeyTypeECDSA:
+		privBytes, err := x509.MarshalECPrivateKey(keyPair.PrivateKey.(*ecdsa.PrivateKey))
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal ECDSA private key: %w", err)
+		}
+		pemBlock = &pem.Block{
+			Type:  "EC PRIVATE KEY",
+			Bytes: privBytes,
+		}
+	default:
+		return "", errors.New("unsupported key type")
+	}
+
+	return string(pem.EncodeToMemory(pemBlock)), nil
 }
 
 // SaveKeyPair saves a key pair to files
@@ -198,11 +292,21 @@ func (km *KeyManager) LoadKeyPair(name string) (*KeyPair, error) {
 		return nil, err
 	}
 
-	return &KeyPair{
+	keyPair := &KeyPair{
 		Type:       keyType,
 		PrivateKey: privateKey,
 		PublicKey:  publicKey,
-	}, nil
+	}
+
+	// Generate PEM strings
+	if err := km.generatePEMStrings(keyPair); err != nil {
+		return nil, err
+	}
+
+	// Cache as system key pair
+	km.systemKeyPair = keyPair
+
+	return keyPair, nil
 }
 
 // loadPrivateKey loads a private key from a PEM file
@@ -274,5 +378,173 @@ func (km *KeyManager) GetPublicKeyBytes(keyPair *KeyPair) ([]byte, error) {
 		return x509.MarshalPKIXPublicKey(keyPair.PublicKey.(*ecdsa.PublicKey))
 	default:
 		return nil, errors.New("unsupported key type")
+	}
+}
+
+// ==================== Certificate Support Methods ====================
+
+// GetSystemKeyPair returns the cached system key pair
+func (km *KeyManager) GetSystemKeyPair() *KeyPair {
+	return km.systemKeyPair
+}
+
+// SetSystemKeyPair sets the system key pair (call after LoadKeyPair or GenerateKeyPair)
+func (km *KeyManager) SetSystemKeyPair(keyPair *KeyPair) {
+	km.systemKeyPair = keyPair
+}
+
+// GetPublicKeyPEM returns the system public key in PEM format
+func (km *KeyManager) GetPublicKeyPEM() (string, error) {
+	if km.systemKeyPair == nil {
+		return "", errors.New("no system key pair loaded")
+	}
+	return km.systemKeyPair.PublicKeyPEM, nil
+}
+
+// GetPrivateKey returns the RSA private key (for RSA keys only)
+func (km *KeyManager) GetPrivateKey() (*rsa.PrivateKey, error) {
+	if km.systemKeyPair == nil {
+		return nil, errors.New("no system key pair loaded")
+	}
+
+	if km.systemKeyPair.Type != KeyTypeRSA {
+		return nil, errors.New("system key is not RSA type")
+	}
+
+	privateKey, ok := km.systemKeyPair.PrivateKey.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("failed to cast private key to RSA")
+	}
+
+	return privateKey, nil
+}
+
+// GetECDSAPrivateKey returns the ECDSA private key (for ECDSA keys only)
+func (km *KeyManager) GetECDSAPrivateKey() (*ecdsa.PrivateKey, error) {
+	if km.systemKeyPair == nil {
+		return nil, errors.New("no system key pair loaded")
+	}
+
+	if km.systemKeyPair.Type != KeyTypeECDSA {
+		return nil, errors.New("system key is not ECDSA type")
+	}
+
+	privateKey, ok := km.systemKeyPair.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("failed to cast private key to ECDSA")
+	}
+
+	return privateKey, nil
+}
+
+// GetKeyType returns the type of system key
+func (km *KeyManager) GetKeyType() KeyType {
+	if km.systemKeyPair == nil {
+		return ""
+	}
+	return km.systemKeyPair.Type
+}
+
+// ==================== Signing Methods ====================
+
+// SignData signs data with the system private key (supports RSA and ECDSA)
+func (km *KeyManager) SignData(data []byte) (string, error) {
+	if km.systemKeyPair == nil {
+		return "", errors.New("no system key pair loaded")
+	}
+
+	// Hash the data
+	hash := sha256.Sum256(data)
+
+	var signature []byte
+	var err error
+
+	switch km.systemKeyPair.Type {
+	case KeyTypeRSA:
+		privateKey := km.systemKeyPair.PrivateKey.(*rsa.PrivateKey)
+		signature, err = rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hash[:])
+	case KeyTypeECDSA:
+		privateKey := km.systemKeyPair.PrivateKey.(*ecdsa.PrivateKey)
+		signature, err = ecdsa.SignASN1(rand.Reader, privateKey, hash[:])
+	default:
+		return "", errors.New("unsupported key type for signing")
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to sign data: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(signature), nil
+}
+
+// VerifySignature verifies a signature with the system public key
+func (km *KeyManager) VerifySignature(data []byte, signatureB64 string) error {
+	if km.systemKeyPair == nil {
+		return errors.New("no system key pair loaded")
+	}
+
+	signature, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Hash the data
+	hash := sha256.Sum256(data)
+
+	switch km.systemKeyPair.Type {
+	case KeyTypeRSA:
+		publicKey := km.systemKeyPair.PublicKey.(*rsa.PublicKey)
+		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], signature)
+	case KeyTypeECDSA:
+		publicKey := km.systemKeyPair.PublicKey.(*ecdsa.PublicKey)
+		if !ecdsa.VerifyASN1(publicKey, hash[:], signature) {
+			return errors.New("ECDSA signature verification failed")
+		}
+		return nil
+	default:
+		return errors.New("unsupported key type for verification")
+	}
+}
+
+// VerifySignatureWithKey verifies signature with a provided public key PEM
+func (km *KeyManager) VerifySignatureWithKey(data []byte, signatureB64 string, publicKeyPEM string) error {
+	// Parse PEM
+	block, _ := pem.Decode([]byte(publicKeyPEM))
+	if block == nil {
+		return errors.New("failed to decode public key PEM")
+	}
+
+	signature, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	hash := sha256.Sum256(data)
+
+	// Try RSA first
+	if block.Type == "RSA PUBLIC KEY" {
+		publicKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("failed to parse RSA public key: %w", err)
+		}
+		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], signature)
+	}
+
+	// Try ECDSA/generic public key
+	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse public key: %w", err)
+	}
+
+	switch key := publicKey.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(key, crypto.SHA256, hash[:], signature)
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(key, hash[:], signature) {
+			return errors.New("ECDSA signature verification failed")
+		}
+		return nil
+	default:
+		return errors.New("unsupported public key type")
 	}
 }

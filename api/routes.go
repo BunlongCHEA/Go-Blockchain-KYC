@@ -19,6 +19,8 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/register", handlers.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", handlers.Login)
 	mux.HandleFunc("POST /api/v1/auth/refresh", handlers.RefreshToken)
+	// mux.Handle("POST /api/v1/auth/refresh",
+	// 	middleware.Authenticate(http.HandlerFunc(handlers.RefreshToken)))
 
 	// ==================== Protected Routes ====================
 
@@ -72,6 +74,17 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermKYCVerify)(
 				http.HandlerFunc(handlers.AutoVerifyKYC))))
 
+	// KYC Review Routes
+	mux.Handle("POST /api/v1/kyc/review",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleBankOfficer)(
+				http.HandlerFunc(handlers.PeriodicReviewKYC))))
+
+	mux.Handle("GET /api/v1/kyc/review/status",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.GetKYCReviewStatus))))
+
 	// Bank Routes
 	mux.Handle("POST /api/v1/banks",
 		middleware.Authenticate(
@@ -118,6 +131,40 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
 				http.HandlerFunc(handlers.ValidateChain))))
+
+	// Monitoring Routes
+	mux.Handle("GET /api/v1/audit/logs",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermAuditRead)(
+				http.HandlerFunc(handlers.GetAuditLogs))))
+
+	mux.Handle("GET /api/v1/security/alerts",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.GetSecurityAlerts))))
+
+	mux.Handle("POST /api/v1/security/alerts/review",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ReviewSecurityAlert))))
+
+	// Certificate Routes
+	mux.Handle("POST /api/v1/certificate/issue",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
+				http.HandlerFunc(handlers.IssueVerificationCertificate))))
+
+	mux.Handle("POST /api/v1/certificate/verify",
+		http.HandlerFunc(handlers.VerifyCertificate)) // Public - no auth needed
+
+	// Renewal Alerts Routes
+	mux.Handle("GET /api/v1/alerts/renewal",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetRenewalAlerts)))
+
+	mux.Handle("POST /api/v1/alerts/renewal/configure",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
 
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))

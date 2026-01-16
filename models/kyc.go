@@ -48,9 +48,16 @@ type KYCData struct {
 	DocumentHash     string    `json:"document_hash"`
 	RiskLevel        string    `json:"risk_level"`
 	BankID           string    `json:"bank_id"`
+	EncryptionKeyID  string    `json:"encryption_key_id"` // ADD THIS LINE
 
 	// Encrypted sensitive fields
 	EncryptedData *EncryptedKYCData `json:"encrypted_data,omitempty"`
+
+	// Review tracking
+	LastReviewDate int64  `json:"last_review_date"`
+	NextReviewDate int64  `json:"next_review_date"`
+	ReviewCount    int    `json:"review_count"`
+	ReviewNotes    string `json:"review_notes,omitempty"`
 }
 
 // EncryptedKYCData holds encrypted sensitive fields
@@ -190,4 +197,46 @@ func (k *KYCData) CanVerify() bool {
 // IsOnBlockchain checks if KYC is on blockchain
 func (k *KYCData) IsOnBlockchain() bool {
 	return k.Status == StatusVerified
+}
+
+// NeedsPeriodicReview checks if KYC needs periodic review
+func (k *KYCData) NeedsPeriodicReview() bool {
+	if k.Status != StatusVerified {
+		return false
+	}
+
+	// Review required every 12 months
+	lastReview := k.LastReviewDate
+	if lastReview == 0 {
+		lastReview = k.VerificationDate
+	}
+
+	reviewThreshold := time.Now().AddDate(-1, 0, 0) // 12 months ago
+	return time.Unix(lastReview, 0).Before(reviewThreshold)
+}
+
+// GetDaysUntilReview returns days until next review is required
+func (k *KYCData) GetDaysUntilReview() int {
+	lastReview := k.LastReviewDate
+	if lastReview == 0 {
+		lastReview = k.VerificationDate
+	}
+
+	nextReview := time.Unix(lastReview, 0).AddDate(1, 0, 0)
+	days := int(time.Until(nextReview).Hours() / 24)
+
+	if days < 0 {
+		return 0
+	}
+	return days
+}
+
+// CompleteReview marks KYC as reviewed
+func (k *KYCData) CompleteReview(notes string) {
+	now := time.Now().Unix()
+	k.LastReviewDate = now
+	k.NextReviewDate = time.Now().AddDate(1, 0, 0).Unix()
+	k.ReviewCount++
+	k.ReviewNotes = notes
+	k.UpdatedAt = now
 }

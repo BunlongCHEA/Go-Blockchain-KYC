@@ -51,10 +51,11 @@ type JWTConfig struct {
 
 // CryptoConfig holds cryptographic configuration
 type CryptoConfig struct {
-	Algorithm    string `json:"algorithm"` // RSA or ECDSA
-	KeySize      int    `json:"key_size"`  // 2048 for RSA, 256 for ECDSA
-	AESKeySize   int    `json:"aes_key_size"`
-	KeyStorePath string `json:"key_store_path"`
+	Algorithm     string `json:"algorithm"` // RSA or ECDSA
+	KeySize       int    `json:"key_size"`  // 2048 for RSA, 256 for ECDSA
+	AESKeySize    int    `json:"aes_key_size"`
+	KeyStorePath  string `json:"key_store_path"`
+	EncryptionKey string `json:"encryption_key"`
 }
 
 // ConsensusConfig holds consensus configuration

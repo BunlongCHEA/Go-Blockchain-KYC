@@ -610,11 +610,162 @@ Set Header
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**When external service calls to verify KYC, the system should:**
+- Verify the KYC
+- Sign a verification certificate with the KYC system's private key
+- Return the signed certificate (provable by your public key)**
+
+```bash
+┌──────────────────────┐     1. Request Certificate      ┌─────────────────────┐
+│                      │  ─────────────────────────────▶ │                     │
+│  Transaction Service │  {                              │   KYC Blockchain    │
+│  (External)          │    customer_id: "CUS123",       │   Service           │
+│                      │    requester_id: "TXN-SVC",     │                     │
+│  Has own key pair:   │    requester_public_key: "..."  │                     │
+│  - Private Key       │  }                              │  Has system key:    │
+│  - Public Key        │                                 │  - Private Key      │
+│                      │  ◀───────────────────────────── │  - Public Key       │
+│                      │  2.  Signed Certificate         │                     │
+└──────────────────────┘  {                              └─────────────────────┘
+                            certificate_id: "CERT.. .",
+                            customer_id: "CUS123",
+                            status: "VERIFIED",
+                            kyc_summary: {... },
+                            issuer_public_key: ".. .",
+                            signature: "BASE64..."  ◀── Signed with KYC system's private key
+                          }
+```
+
+| Method                 | Supports / Description         |
+|------------------------|--------------------------------|
+| SignWithKeyManager     | RSA & ECDSA                    |
+| VerifyWithKeyManager   | RSA & ECDSA                    |
+| km.SignData()          | RSA & ECDSA                    |
+| km.VerifySignature()   | RSA & ECDSA                    |
+| km.GetSystemKeyPair()  | Returns cached key pair        |
+| km.GetPublicKeyPEM()   | Returns PEM string             |
+
+**Issue Certificate (External service calls this)**
+
+Set Request
+
+| Setting | Value |
+|---|---|
+| `Method` | PUT |
+| `URL` | http://localhost:8080/api/v1/certificate/issue |
+
+Set Header
+
+| Key | Value |
+|---|---|
+| `Authorization` | Bearer {{access_token}} |
+
+Set Request Body
+
+```json
+{
+    "customer_id": "CUS71395b6a9754",
+    "requester_id":  "TRANSACTION-SERVICE-001",
+    "requester_public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----",
+    "validity_days":  365
+}
+```
+
+- Expected Response
+
+```json
+{
+    "success": true,
+    "message": "Verification certificate issued successfully",
+    "data": {
+        "certificate": {
+            "certificate_id": "CERTxyz123abc456",
+            "customer_id":  "CUS71395b6a9754",
+            "status":  "VERIFIED",
+            "verified_by": "BANK00000001",
+            "verification_date": 1705190400,
+            "expires_at":  1736726400,
+            "requester_id": "TRANSACTION-SERVICE-001",
+            "requester_public_key": "-----BEGIN PUBLIC KEY-----.. .",
+            "kyc_summary": {
+                "first_name": "Sokha",
+                "last_name":  "Chan",
+                "nationality": "Cambodian",
+                "id_type": "national_id",
+                "risk_level": "low",
+                "bank_id": "BANK00000001"
+            },
+            "issuer_id": "KYC-BLOCKCHAIN-SYSTEM",
+            "issuer_public_key": "-----BEGIN PUBLIC KEY-----...",
+            "signature":  "BASE64_ENCODED_SIGNATURE.. .",
+            "signed_at": 1705190500
+        }
+    }
+}
+```
+
+**Verify Certificate (Anyone can verify)**
+
+Set Request
+
+| Setting | Value |
+|---|---|
+| `Method` | PUT |
+| `URL` | http://localhost:8080/api/v1/certificate/verify |
+
+- Expected Response
+
+```json
+{
+    "certificate":  { ... entire certificate object... }
+}
+```
+
+**When external service calls to Re-Issue Certificate, but KYC currently under Grace Period (7-day) before Expired**
+**Service also Alert to Email before Expiry in 30, 7, 1 Day**
+
+```bash
+KYC Verified ─────────────────────────────────────────────────────────────▶
+   │
+   │  Certificate Issued (valid 365 days or less)
+   │  │
+   │  │  ┌──────────────────────────────────────────────────────────────┐
+   │  │  │                    Certificate Validity                      │
+   │  │  └──────────────────────────────────────────────────────────────┘
+   │  │     │                              │                    │       │
+   │  │     ▼ 30 days before               ▼ 7 days before      ▼ 1 day │ Expiry
+   │  │   [Alert Sent]                  [Alert Sent]        [Alert Sent]│
+   │  │                                                                  │
+   │  │                                              ┌───────────────────┤
+   │  │                                              │  Grace Period     │
+   │  │                                              │  (7 days)         │
+   │  │                                              └───────────────────┤
+   │  │                                                                  │
+   │  └──────────────────────────────────────────────────────────────────┘
+   │
+   ├─────────────────────────────────────────────────────────────────────▶
+   │                           12 months
+   │                              │
+   │                              ▼
+   │                    [Periodic Review Required]
+   │                              │
+   │                              ├──── Review Completed ──▶ Reset 12-month timer
+   │                              │
+   │                              └──── Grace Period (7 days) ──▶ Must complete review
+   │
+   └─────────────────────────────────────────────────────────────────────▶
+                              ID Expiry
+                                 │
+                                 ├──── Update ID ──▶ Continue
+                                 │
+                                 └──── Grace Period (7 days) ──▶ Must update ID
+```
+
 
 # IV. Other API
 ### UPDATE KYC (While PENDING) & Create Block After Success Verified
 
-Set Request:
+Set Request
 
 | Setting | Value |
 |---|---|

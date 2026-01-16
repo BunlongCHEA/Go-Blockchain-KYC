@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Go-Blockchain-KYC/auth"
+	"Go-Blockchain-KYC/monitoring"
 )
 
 // ContextKey is a type for context keys
@@ -22,13 +23,15 @@ const (
 type Middleware struct {
 	authService *auth.AuthService
 	rbac        *auth.RBAC
+	monitoring  *monitoring.MonitoringService
 }
 
 // NewMiddleware creates a new middleware instance
-func NewMiddleware(authService *auth.AuthService, rbac *auth.RBAC) *Middleware {
+func NewMiddleware(authService *auth.AuthService, rbac *auth.RBAC, monitoringService *monitoring.MonitoringService) *Middleware {
 	return &Middleware{
 		authService: authService,
 		rbac:        rbac,
+		monitoring:  monitoringService,
 	}
 }
 
@@ -42,14 +45,36 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 
 		next.ServeHTTP(wrapper, r)
 
-		log.Printf(
-			"%s %s %s %d %v",
-			r.RemoteAddr,
-			r.Method,
-			r.URL.Path,
-			wrapper.statusCode,
-			time.Since(start),
-		)
+		duration := time.Since(start)
+
+		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapper.statusCode, duration)
+
+		// Record activity for monitoring
+		if m.monitoring != nil {
+			userID := "anonymous"
+			if user, ok := GetUserFromContext(r); ok {
+				userID = user.ID
+			}
+
+			activity := monitoring.UserActivity{
+				UserID:     userID,
+				Action:     r.Method + " " + r.URL.Path,
+				Resource:   getResourceType(r.URL.Path),
+				ResourceID: r.URL.Query().Get("customer_id"),
+				IPAddress:  getClientIP(r),
+				UserAgent:  r.UserAgent(),
+				Timestamp:  time.Now(),
+				Success:    wrapper.statusCode < 400,
+				Details: map[string]interface{}{
+					"method":      r.Method,
+					"path":        r.URL.Path,
+					"status_code": wrapper.statusCode,
+					"duration_ms": duration.Milliseconds(),
+				},
+			}
+
+			m.monitoring.RecordActivity(activity)
+		}
 	})
 }
 
@@ -203,4 +228,44 @@ func GetUserFromContext(r *http.Request) (*auth.User, bool) {
 func GetClaimsFromContext(r *http.Request) (*auth.Claims, bool) {
 	claims, ok := r.Context().Value(ClaimsContextKey).(*auth.Claims)
 	return claims, ok
+}
+
+// getResourceType extracts resource type from path
+func getResourceType(path string) string {
+	if strings.Contains(path, "/kyc") {
+		return "KYC"
+	}
+	if strings.Contains(path, "/bank") {
+		return "BANK"
+	}
+	if strings.Contains(path, "/blockchain") {
+		return "BLOCKCHAIN"
+	}
+	if strings.Contains(path, "/auth") {
+		return "AUTH"
+	}
+	return "OTHER"
+}
+
+// getClientIP extracts client IP from request
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		ips := strings.Split(xff, ",")
+		return strings.TrimSpace(ips[0])
+	}
+
+	// Check X-Real-IP header
+	xri := r.Header.Get("X-Real-IP")
+	if xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr
+	ip := r.RemoteAddr
+	if colonIndex := strings.LastIndex(ip, ":"); colonIndex != -1 {
+		ip = ip[:colonIndex]
+	}
+	return ip
 }

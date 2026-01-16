@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"Go-Blockchain-KYC/models"
 
@@ -893,84 +894,594 @@ func (p *PostgresStorage) DeleteBank(bankID string) error {
 
 // ==================== Audit Log Operations ====================
 
-// AuditLog represents an audit log entry
-type AuditLog struct {
-	ID           int64                  `json:"id"`
-	UserID       string                 `json:"user_id"`
-	Action       string                 `json:"action"`
-	ResourceType string                 `json:"resource_type"`
-	ResourceID   string                 `json:"resource_id"`
-	Details      map[string]interface{} `json:"details"`
-	IPAddress    string                 `json:"ip_address"`
-	UserAgent    string                 `json:"user_agent"`
-	CreatedAt    string                 `json:"created_at"`
-}
-
 // SaveAuditLog saves an audit log entry
-func (p *PostgresStorage) SaveAuditLog(log *AuditLog) error {
-	details, _ := json.Marshal(log.Details)
+func (p *PostgresStorage) SaveAuditLog(auditLog *models.AuditLog) error {
+	details, _ := json.Marshal(auditLog.Details)
 
 	query := `
-		INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
 	_, err := p.db.Exec(query,
-		log.UserID,
-		log.Action,
-		log.ResourceType,
-		log.ResourceID,
+		auditLog.UserID,
+		auditLog.Action,
+		auditLog.ResourceType,
+		auditLog.ResourceID,
 		details,
-		log.IPAddress,
-		log.UserAgent,
+		auditLog.IPAddress,
+		auditLog.UserAgent,
+		auditLog.CreatedAt,
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to save audit log: %w", err)
+		return fmt.Errorf("failed to save audit log:  %w", err)
 	}
 
 	return nil
 }
 
-// GetAuditLogs retrieves audit logs with pagination
-func (p *PostgresStorage) GetAuditLogs(limit, offset int) ([]*AuditLog, error) {
+// GetAuditLogs retrieves audit logs with filters
+func (p *PostgresStorage) GetAuditLogs(userID, action string, startTime, endTime time.Time, limit int) ([]*models.AuditLog, error) {
 	query := `
 		SELECT id, user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at
-		FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2
+		FROM audit_log
+		WHERE ($1 = '' OR user_id = $1)
+		AND ($2 = '' OR action = $2)
+		AND created_at >= $3
+		AND created_at <= $4
+		ORDER BY created_at DESC
+		LIMIT $5
 	`
 
-	rows, err := p.db.Query(query, limit, offset)
+	rows, err := p.db.Query(query, userID, action, startTime, endTime, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit logs: %w", err)
 	}
 	defer rows.Close()
 
-	var logs []*AuditLog
+	var logs []*models.AuditLog
 	for rows.Next() {
-		log := &AuditLog{}
+		auditLog := &models.AuditLog{}
 		var details []byte
 
 		err := rows.Scan(
-			&log.ID,
-			&log.UserID,
-			&log.Action,
-			&log.ResourceType,
-			&log.ResourceID,
+			&auditLog.ID,
+			&auditLog.UserID,
+			&auditLog.Action,
+			&auditLog.ResourceType,
+			&auditLog.ResourceID,
 			&details,
-			&log.IPAddress,
-			&log.UserAgent,
-			&log.CreatedAt,
+			&auditLog.IPAddress,
+			&auditLog.UserAgent,
+			&auditLog.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan audit log: %w", err)
 		}
 
 		if details != nil {
-			json.Unmarshal(details, &log.Details)
+			json.Unmarshal(details, &auditLog.Details)
 		}
 
-		logs = append(logs, log)
+		logs = append(logs, auditLog)
 	}
 
 	return logs, nil
+}
+
+// GetAuditLogsByUser retrieves audit logs for a specific user
+func (p *PostgresStorage) GetAuditLogsByUser(userID string, limit int) ([]*models.AuditLog, error) {
+	return p.GetAuditLogs(userID, "", time.Now().AddDate(0, 0, -30), time.Now(), limit)
+}
+
+// BlockUser blocks a user account
+func (p *PostgresStorage) BlockUser(userID, reason string) error {
+	query := `UPDATE users SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	_, err := p.db.Exec(query, userID)
+
+	if err == nil {
+		// Log the block action
+		p.SaveAuditLog(&models.AuditLog{
+			UserID:       "SYSTEM",
+			Action:       "USER_BLOCKED",
+			ResourceType: "USER",
+			ResourceID:   userID,
+			Details:      map[string]interface{}{"reason": reason},
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	return err
+}
+
+// UnblockUser unblocks a user account
+func (p *PostgresStorage) UnblockUser(userID string) error {
+	query := `UPDATE users SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	_, err := p.db.Exec(query, userID)
+
+	if err == nil {
+		p.SaveAuditLog(&models.AuditLog{
+			UserID:       "SYSTEM",
+			Action:       "USER_UNBLOCKED",
+			ResourceType: "USER",
+			ResourceID:   userID,
+			Details:      map[string]interface{}{},
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	return err
+}
+
+// ==================== Recovery Operations ====================
+
+// LoadRecoveryData loads all data needed for blockchain recovery
+func (p *PostgresStorage) LoadRecoveryData() (*models.RecoveryData, error) {
+	data := &models.RecoveryData{}
+	var err error
+
+	// Load blocks
+	data.Blocks, err = p.LoadAllBlocks()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load blocks: %w", err)
+	}
+
+	// Load pending transactions
+	data.Transactions, err = p.LoadPendingTransactions()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load pending transactions: %w", err)
+	}
+
+	// Load KYC records
+	data.KYCRecords, err = p.LoadAllKYCRecords()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load KYC records: %w", err)
+	}
+
+	// Load banks
+	data.Banks, err = p.LoadAllBanks()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load banks: %w", err)
+	}
+
+	return data, nil
+}
+
+// LoadAllBlocks loads all blocks from database
+func (p *PostgresStorage) LoadAllBlocks() ([]*models.Block, error) {
+	query := `
+		SELECT block_index, timestamp, prev_hash, hash, nonce, merkle_root, difficulty, miner
+		FROM blocks
+		ORDER BY block_index ASC
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query blocks: %w", err)
+	}
+	defer rows.Close()
+
+	blocks := make([]*models.Block, 0)
+	for rows.Next() {
+		block := &models.Block{}
+		var merkleRoot sql.NullString
+		var miner sql.NullString
+
+		err := rows.Scan(
+			&block.Index,
+			&block.Timestamp,
+			&block.PrevHash,
+			&block.Hash,
+			&block.Nonce,
+			&merkleRoot,
+			&block.Difficulty,
+			&miner,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan block: %w", err)
+		}
+
+		if merkleRoot.Valid {
+			block.MerkleRoot = merkleRoot.String
+		}
+		if miner.Valid {
+			block.Miner = miner.String
+		}
+
+		// Load transactions for this block
+		txs, err := p.LoadTransactionsByBlockHash(block.Hash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load transactions for block %s: %w", block.Hash, err)
+		}
+		block.Transactions = txs
+
+		blocks = append(blocks, block)
+	}
+
+	return blocks, nil
+}
+
+// LoadTransactionsByBlockHash loads transactions for a specific block
+func (p *PostgresStorage) LoadTransactionsByBlockHash(blockHash string) ([]*models.Transaction, error) {
+	query := `
+		SELECT id, type, customer_id, bank_id, user_id, timestamp, signature, description, metadata, is_pending
+		FROM transactions
+		WHERE block_hash = $1
+		ORDER BY timestamp ASC
+	`
+
+	rows, err := p.db.Query(query, blockHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transactions: %w", err)
+	}
+	defer rows.Close()
+
+	return p.scanTransactionsWithPending(rows)
+}
+
+// LoadPendingTransactions loads all pending transactions
+func (p *PostgresStorage) LoadPendingTransactions() ([]*models.Transaction, error) {
+	query := `
+		SELECT id, type, customer_id, bank_id, user_id, timestamp, signature, description, metadata, is_pending
+		FROM transactions
+		WHERE is_pending = TRUE
+		ORDER BY timestamp ASC
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending transactions: %w", err)
+	}
+	defer rows.Close()
+
+	return p.scanTransactionsWithPending(rows)
+}
+
+// scanTransactionsWithPending scans transaction rows including is_pending field
+func (p *PostgresStorage) scanTransactionsWithPending(rows *sql.Rows) ([]*models.Transaction, error) {
+	txs := make([]*models.Transaction, 0)
+
+	for rows.Next() {
+		tx := &models.Transaction{}
+		var signature, description sql.NullString
+		var metadata []byte
+		var isPending bool
+
+		err := rows.Scan(
+			&tx.ID,
+			&tx.Type,
+			&tx.CustomerID,
+			&tx.BankID,
+			&tx.UserID,
+			&tx.Timestamp,
+			&signature,
+			&description,
+			&metadata,
+			&isPending,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan transaction: %w", err)
+		}
+
+		if signature.Valid {
+			tx.Signature = signature.String
+		}
+		if description.Valid {
+			tx.Description = description.String
+		}
+		if metadata != nil {
+			json.Unmarshal(metadata, &tx.Metadata)
+		}
+
+		txs = append(txs, tx)
+	}
+
+	return txs, nil
+}
+
+// LoadAllKYCRecords loads all KYC records from database
+func (p *PostgresStorage) LoadAllKYCRecords() ([]*models.KYCData, error) {
+	query := `
+		SELECT customer_id, first_name, last_name, date_of_birth, nationality,
+			   id_type, id_number_encrypted, id_expiry_date,
+			   address_street, address_city, address_state, address_postal_code, address_country,
+			   email_encrypted, phone_encrypted, status, verified_by, verification_date,
+			   document_hash, risk_level, bank_id, encryption_key_id, created_at, updated_at
+		FROM kyc_records
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query KYC records: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]*models.KYCData, 0)
+	for rows.Next() {
+		kyc := &models.KYCData{
+			Address: models.Address{},
+		}
+		var idNumber, email, phone string
+		var keyID sql.NullString
+		var verifiedBy sql.NullString
+		var verificationDate sql.NullInt64
+
+		err := rows.Scan(
+			&kyc.CustomerID,
+			&kyc.FirstName,
+			&kyc.LastName,
+			&kyc.DateOfBirth,
+			&kyc.Nationality,
+			&kyc.IDType,
+			&idNumber,
+			&kyc.IDExpiryDate,
+			&kyc.Address.Street,
+			&kyc.Address.City,
+			&kyc.Address.State,
+			&kyc.Address.PostalCode,
+			&kyc.Address.Country,
+			&email,
+			&phone,
+			&kyc.Status,
+			&verifiedBy,
+			&verificationDate,
+			&kyc.DocumentHash,
+			&kyc.RiskLevel,
+			&kyc.BankID,
+			&keyID,
+			&kyc.CreatedAt,
+			&kyc.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan KYC record: %w", err)
+		}
+
+		if verifiedBy.Valid {
+			kyc.VerifiedBy = verifiedBy.String
+		}
+		if verificationDate.Valid {
+			kyc.VerificationDate = verificationDate.Int64
+		}
+
+		// Handle encrypted data
+		if keyID.Valid && keyID.String != "" {
+			kyc.EncryptedData = &models.EncryptedKYCData{
+				IDNumber: idNumber,
+				Email:    email,
+				Phone:    phone,
+				KeyID:    keyID.String,
+			}
+			kyc.EncryptionKeyID = keyID.String
+		} else {
+			kyc.IDNumber = idNumber
+			kyc.Email = email
+			kyc.Phone = phone
+		}
+
+		records = append(records, kyc)
+	}
+
+	return records, nil
+}
+
+// LoadAllBanks loads all banks from database
+func (p *PostgresStorage) LoadAllBanks() ([]*models.Bank, error) {
+	query := `
+		SELECT id, name, code, country, license_no, public_key, is_active,
+			   address_street, address_city, address_state, address_postal_code, address_country,
+			   contact_email, contact_phone, created_at, updated_at
+		FROM banks
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query banks: %w", err)
+	}
+	defer rows.Close()
+
+	banks := make([]*models.Bank, 0)
+	for rows.Next() {
+		bank := &models.Bank{
+			Address: models.Address{},
+		}
+		var licenseNo, publicKey sql.NullString
+		var contactEmail, contactPhone sql.NullString
+
+		err := rows.Scan(
+			&bank.ID,
+			&bank.Name,
+			&bank.Code,
+			&bank.Country,
+			&licenseNo,
+			&publicKey,
+			&bank.IsActive,
+			&bank.Address.Street,
+			&bank.Address.City,
+			&bank.Address.State,
+			&bank.Address.PostalCode,
+			&bank.Address.Country,
+			&contactEmail,
+			&contactPhone,
+			&bank.CreatedAt,
+			&bank.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan bank:  %w", err)
+		}
+
+		if licenseNo.Valid {
+			bank.LicenseNo = licenseNo.String
+		}
+		if publicKey.Valid {
+			bank.PublicKey = publicKey.String
+		}
+		if contactEmail.Valid {
+			bank.ContactEmail = contactEmail.String
+		}
+		if contactPhone.Valid {
+			bank.ContactPhone = contactPhone.String
+		}
+
+		banks = append(banks, bank)
+	}
+
+	return banks, nil
+}
+
+// SaveRenewalAlert saves a renewal alert
+func (p *PostgresStorage) SaveRenewalAlert(alert *models.RenewalAlert) error {
+	query := `
+		INSERT INTO renewal_alerts (id, certificate_id, customer_id, requester_id, alert_type, 
+			alert_date, cert_expires_at, status, webhook_url, email_recipient, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, sent_at = EXCLUDED.sent_at
+	`
+
+	_, err := p.db.Exec(query,
+		alert.ID,
+		alert.CertificateID,
+		alert.CustomerID,
+		alert.RequesterID,
+		alert.AlertType,
+		alert.AlertDate,
+		alert.CertExpiresAt,
+		alert.Status,
+		alert.WebhookURL,
+		alert.EmailRecipient,
+		alert.CreatedAt,
+	)
+
+	return err
+}
+
+// GetPendingRenewalAlerts gets alerts that need to be sent
+func (p *PostgresStorage) GetPendingRenewalAlerts() ([]*models.RenewalAlert, error) {
+	now := time.Now().Unix()
+
+	query := `
+		SELECT id, certificate_id, customer_id, requester_id, alert_type, 
+			alert_date, cert_expires_at, status, webhook_url, email_recipient, created_at
+		FROM renewal_alerts
+		WHERE status = 'PENDING' AND alert_date <= $1
+		ORDER BY alert_date ASC
+	`
+
+	rows, err := p.db.Query(query, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var alerts []*models.RenewalAlert
+	for rows.Next() {
+		alert := &models.RenewalAlert{}
+		var webhookURL, emailRecipient sql.NullString
+
+		err := rows.Scan(
+			&alert.ID,
+			&alert.CertificateID,
+			&alert.CustomerID,
+			&alert.RequesterID,
+			&alert.AlertType,
+			&alert.AlertDate,
+			&alert.CertExpiresAt,
+			&alert.Status,
+			&webhookURL,
+			&emailRecipient,
+			&alert.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if webhookURL.Valid {
+			alert.WebhookURL = webhookURL.String
+		}
+		if emailRecipient.Valid {
+			alert.EmailRecipient = emailRecipient.String
+		}
+
+		alerts = append(alerts, alert)
+	}
+
+	return alerts, nil
+}
+
+// UpdateRenewalAlertStatus updates alert status
+func (p *PostgresStorage) UpdateRenewalAlertStatus(alertID string, status models.RenewalAlertStatus) error {
+	now := time.Now().Unix()
+
+	query := `UPDATE renewal_alerts SET status = $1, sent_at = $2 WHERE id = $3`
+	_, err := p.db.Exec(query, status, now, alertID)
+
+	return err
+}
+
+// UpdateRenewalAlertConfig updates webhook/email for certificate alerts
+func (p *PostgresStorage) UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error {
+	query := `
+		UPDATE renewal_alerts 
+		SET webhook_url = $1, email_recipient = $2 
+		WHERE certificate_id = $3 AND status = 'PENDING'
+	`
+
+	_, err := p.db.Exec(query, webhookURL, emailRecipient, certificateID)
+	return err
+}
+
+// GetRenewalAlertsByRequester gets alerts for a specific requester
+func (p *PostgresStorage) GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error) {
+	query := `
+		SELECT id, certificate_id, customer_id, requester_id, alert_type, 
+			alert_date, cert_expires_at, status, webhook_url, email_recipient, sent_at, created_at
+		FROM renewal_alerts
+		WHERE requester_id = $1
+		ORDER BY alert_date DESC
+	`
+
+	rows, err := p.db.Query(query, requesterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var alerts []*models.RenewalAlert
+	for rows.Next() {
+		alert := &models.RenewalAlert{}
+		var webhookURL, emailRecipient sql.NullString
+		var sentAt sql.NullInt64
+
+		err := rows.Scan(
+			&alert.ID,
+			&alert.CertificateID,
+			&alert.CustomerID,
+			&alert.RequesterID,
+			&alert.AlertType,
+			&alert.AlertDate,
+			&alert.CertExpiresAt,
+			&alert.Status,
+			&webhookURL,
+			&emailRecipient,
+			&sentAt,
+			&alert.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if webhookURL.Valid {
+			alert.WebhookURL = webhookURL.String
+		}
+		if emailRecipient.Valid {
+			alert.EmailRecipient = emailRecipient.String
+		}
+		if sentAt.Valid {
+			alert.SentAt = &sentAt.Int64
+		}
+
+		alerts = append(alerts, alert)
+	}
+
+	return alerts, nil
 }

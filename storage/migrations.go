@@ -110,6 +110,22 @@ var Migrations = []string{
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`,
 
+	// Create renewal_alerts table
+	`CREATE TABLE IF NOT EXISTS renewal_alerts (
+		id VARCHAR(50) PRIMARY KEY,
+		certificate_id VARCHAR(50) NOT NULL,
+		customer_id VARCHAR(50) NOT NULL,
+		requester_id VARCHAR(100) NOT NULL,
+		alert_type VARCHAR(20) NOT NULL,
+		alert_date BIGINT NOT NULL,
+		cert_expires_at BIGINT NOT NULL,
+		status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+		webhook_url TEXT,
+		email_recipient VARCHAR(255),
+		sent_at BIGINT,
+		created_at BIGINT NOT NULL
+	)`,
+
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)`,
@@ -118,4 +134,7 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_kyc_records_bank_id ON kyc_records(bank_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_status ON renewal_alerts(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_alert_date ON renewal_alerts(alert_date)`,
+	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_requester ON renewal_alerts(requester_id)`,
 }

@@ -13,7 +13,9 @@ import (
 
 	"Go-Blockchain-KYC/auth"
 	"Go-Blockchain-KYC/config"
+	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
+	"Go-Blockchain-KYC/monitoring"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/verification"
 )
@@ -27,6 +29,8 @@ type Server struct {
 	storage             storage.Storage
 	rbac                *auth.RBAC
 	verificationService *verification.VerificationService
+	monitoringService   *monitoring.MonitoringService
+	keyManager          *crypto.KeyManager
 }
 
 // NewServer creates a new server instance
@@ -36,6 +40,8 @@ func NewServer(
 	authService *auth.AuthService,
 	store storage.Storage,
 	verificationService *verification.VerificationService,
+	monitoringService *monitoring.MonitoringService,
+	keyManager *crypto.KeyManager,
 ) *Server {
 	return &Server{
 		config:              cfg,
@@ -44,16 +50,18 @@ func NewServer(
 		storage:             store,
 		rbac:                auth.NewRBAC(),
 		verificationService: verificationService,
+		monitoringService:   monitoringService,
+		keyManager:          keyManager,
 	}
 }
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
 	// Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager)
 
 	// Create middleware
-	middleware := NewMiddleware(s.authService, s.rbac)
+	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)
 
 	// Setup routes
 	router := SetupRoutes(handlers, middleware)

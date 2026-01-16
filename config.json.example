@@ -30,6 +30,7 @@
     "key_size": 256,
     "aes_key_size": 32,
     "key_store_path": "./keys"
+    "encryption_key": "your-32-byte-secret-key-here123"
   },
   "consensus":  {
     "type": "pbft",

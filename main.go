@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"Go-Blockchain-KYC/api"
@@ -11,6 +14,7 @@ import (
 	"Go-Blockchain-KYC/consensus"
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
+	"Go-Blockchain-KYC/monitoring"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/verification"
 )
@@ -24,6 +28,7 @@ func main() {
 	// Load configuration
 	cfg, err := config.LoadConfig("config.json")
 	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 		log.Printf("Using default configuration: %v", err)
 		cfg = config.DefaultConfig()
 	}
@@ -69,8 +74,19 @@ func main() {
 	log.Printf("   ✓ Blockchain initialized (Difficulty: %d)", cfg.Blockchain.Difficulty)
 	log.Println("   ✓ Genesis block created")
 
+	// 5.  Recover blockchain from database (if available)
+	log.Println("\n5. Checking for existing data to recover...")
+	if store != nil {
+		err = recoverBlockchainFromStorage(blockchain, store)
+		if err != nil {
+			log.Printf("   ⚠ Recovery warning: %v", err)
+		}
+	} else {
+		log.Println("   No database available, starting fresh blockchain")
+	}
+
 	// Initialize consensus mechanism
-	log.Println("\n5. Initializing Consensus Mechanism...")
+	log.Println("\n6. Initializing Consensus Mechanism...")
 	consensusEngine := initializeConsensus(cfg)
 	if err := consensusEngine.Start(); err != nil {
 		log.Printf("   ⚠ Consensus not started:  %v", err)
@@ -79,48 +95,41 @@ func main() {
 	}
 
 	// Initialize verification service
-	log.Println("\n8. Initializing Identity Verification Service...")
+	log.Println("\n7. Initializing Identity Verification Service...")
 	verificationService := initializeVerification(cfg)
 	log.Println("   ✓ Verification service initialized")
 
+	// Initialize monitoring service
+	log.Println("\n8. Initializing Monitoring Service...")
+	monitoringConfig := monitoring.DefaultMonitoringConfig()
+	monitoringService := monitoring.NewMonitoringService(store, monitoringConfig)
+	monitoringService.Start()
+
 	// Setup demo data
-	log.Println("\n6. Setting Up Demo Data...")
-	setupDemoData(blockchain, authService, keyManager)
+	log.Println("\n9. Setting Up Demo Data...")
+	// setupDemoData(blockchain, authService, keyManager)
+
+	// if !blockchain.HasData() {
+	// 	setupDemoDataBank(blockchain, store)
+	// } else {
+	// 	log.Println("   ✓ Skipping demo banking data setup - existing data recovered")
+	// }
+
+	setupDemoData(blockchain, authService, keyManager, store)
+	// if !blockchain.HasData() {
+	// 	setupDemoData(blockchain, authService, keyManager, store)
+	// } else {
+	// 	log.Println("   ✓ Skipping demo data setup - existing data recovered")
+	// }
 
 	// Start API server
 	log.Println("\n7. Starting REST API Server...")
-	server := api.NewServer(cfg, blockchain, authService, store, verificationService)
+	server := api.NewServer(cfg, blockchain, authService, store, verificationService, monitoringService, keyManager)
 
-	fmt.Println()
-	fmt.Println("==============================================")
-	fmt.Printf("   Server running on http://%s:%d\n", cfg.Server.Host, cfg.Server.Port)
-	fmt.Println("==============================================")
-	fmt.Println()
-	fmt.Println("API Endpoints:")
-	fmt.Println("  POST   /api/v1/auth/register     - Register user")
-	fmt.Println("  POST   /api/v1/auth/login        - Login")
-	fmt.Println("  POST   /api/v1/auth/refresh      - Refresh token")
-	fmt.Println("  GET    /api/v1/auth/profile      - Get profile")
-	fmt.Println()
-	fmt.Println("  POST   /api/v1/kyc               - Create KYC")
-	fmt.Println("  GET    /api/v1/kyc               - Get KYC")
-	fmt.Println("  PUT    /api/v1/kyc               - Update KYC")
-	fmt.Println("  DELETE /api/v1/kyc               - Delete KYC")
-	fmt.Println("  GET    /api/v1/kyc/list          - List KYC records")
-	fmt.Println("  POST   /api/v1/kyc/verify        - Verify KYC")
-	fmt.Println("  POST   /api/v1/kyc/auto-verify   - Auto Verify KYC with Third-Party Provider")
-	fmt.Println("  POST   /api/v1/kyc/reject        - Reject KYC")
-	fmt.Println()
-	fmt.Println("  POST   /api/v1/banks             - Register bank")
-	fmt.Println("  GET    /api/v1/banks             - Get bank")
-	fmt.Println("  GET    /api/v1/banks/list        - List banks")
-	fmt.Println()
-	fmt.Println("  GET    /api/v1/blockchain/stats  - Blockchain stats")
-	fmt.Println("  GET    /api/v1/blockchain/blocks - Get blocks")
-	fmt.Println("  POST   /api/v1/blockchain/mine   - Mine block")
-	fmt.Println()
-	fmt.Println("  GET    /health                   - Health check")
-	fmt.Println()
+	// Handle graceful shutdown
+	go handleGracefulShutdown(monitoringService, store, consensusEngine)
+
+	printAPIEndpoints(cfg)
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server error: %v", err)
@@ -149,10 +158,28 @@ func initializeCrypto(cfg *config.Config) (*crypto.KeyManager, *crypto.Encryptor
 		}
 	}
 
-	// Create encryptor for data encryption
-	encryptionKey, err := crypto.GenerateKey()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate encryption key: %w", err)
+	// // Create encryptor for data encryption
+	// encryptionKey, err := crypto.GenerateKey()
+	// if err != nil {
+	// 	return nil, nil, fmt.Errorf("failed to generate encryption key: %w", err)
+	// }
+
+	// Use fixed key from config instead of generating new one
+	var encryptionKey []byte
+	if cfg.Crypto.EncryptionKey != "" {
+		// Use key from config (must be 32 bytes for AES-256)
+		encryptionKey = []byte(cfg.Crypto.EncryptionKey)
+		if len(encryptionKey) != 32 {
+			return nil, nil, fmt.Errorf("encryption_key must be exactly 32 bytes, got %d", len(encryptionKey))
+		}
+		log.Println("   ✓ Using encryption key from config")
+	} else {
+		// Generate new key (only for first run, will break on restart!)
+		encryptionKey, err = crypto.GenerateKey()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to generate encryption key: %w", err)
+		}
+		log.Println("   ⚠ Generated new encryption key (data won't persist across restarts)")
 	}
 
 	encryptor, err := crypto.NewEncryptor(encryptionKey)
@@ -283,32 +310,129 @@ func initializeVerification(cfg *config.Config) *verification.VerificationServic
 	return service
 }
 
+// recoverBlockchainFromStorage recovers blockchain state from database
+func recoverBlockchainFromStorage(blockchain *models.Blockchain, store storage.Storage) error {
+	// Load recovery data from database
+	data, err := store.LoadRecoveryData()
+	if err != nil {
+		return err
+	}
+
+	// Check if there's data to recover
+	if len(data.Blocks) == 0 && len(data.Banks) == 0 && len(data.KYCRecords) == 0 {
+		log.Println("   No existing data found, starting fresh blockchain")
+		return nil
+	}
+
+	log.Println("   Found existing data in database:")
+	log.Printf("   - Blocks: %d", len(data.Blocks))
+	log.Printf("   - Banks: %d", len(data.Banks))
+	log.Printf("   - KYC Records: %d", len(data.KYCRecords))
+	log.Printf("   - Pending Transactions: %d", len(data.Transactions))
+
+	// Recover blockchain state
+	err = blockchain.RecoverFromStorage(data)
+	if err != nil {
+		return err
+	}
+
+	// Log recovery stats
+	stats := blockchain.GetRecoveryStats()
+	log.Println("\n   Recovery Summary:")
+	log.Printf("   - Total Blocks: %d", stats["total_blocks"])
+	log.Printf("   - Total Banks: %d", stats["total_banks"])
+	log.Printf("   - Total KYC Records:  %d", stats["total_kyc_records"])
+	log.Printf("   - Pending Transactions: %d", stats["pending_txs"])
+	log.Printf("   - Chain Valid: %v", stats["chain_valid"])
+
+	if latestHash, ok := stats["latest_block_hash"]; ok {
+		log.Printf("   - Latest Block Hash: %s", latestHash)
+	}
+
+	return nil
+}
+
+// // setupDemoData creates demo banks
+// func setupDemoDataBank(blockchain *models.Blockchain, store storage.Storage) {
+// 	// Register demo banks
+// 	bank1 := models.NewBank("BANK00000001", "First National Bank", "FNB", "USA", "LIC-001", "")
+// 	bank1.Address = models.Address{
+// 		Street:     "123 Financial District",
+// 		City:       "New York",
+// 		State:      "NY",
+// 		PostalCode: "10001",
+// 		Country:    "USA",
+// 	}
+// 	bank1.ContactEmail = "contact@fnb.com"
+// 	blockchain.RegisterBank(bank1)
+
+// 	// Save to database if available
+// 	if store != nil {
+// 		store.SaveBank(bank1)
+// 	}
+
+// 	bank2 := models.NewBank("BANK00000002", "Global Trust Bank", "GTB", "USA", "LIC-002", "")
+// 	bank2.Address = models.Address{
+// 		Street:     "456 Banking Avenue",
+// 		City:       "Los Angeles",
+// 		State:      "CA",
+// 		PostalCode: "90001",
+// 		Country:    "USA",
+// 	}
+// 	bank2.ContactEmail = "contact@gtb.com"
+// 	blockchain.RegisterBank(bank2)
+
+// 	// Save to database if available
+// 	if store != nil {
+// 		store.SaveBank(bank2)
+// 	}
+
+// 	log.Println("   ✓ Demo banks registered")
+// }
+
 // setupDemoData creates demo banks and users
-func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService, keyManager *crypto.KeyManager) {
-	// Register demo banks
-	bank1 := models.NewBank("BANK00000001", "First National Bank", "FNB", "USA", "LIC-001", "")
-	bank1.Address = models.Address{
-		Street:     "123 Financial District",
-		City:       "New York",
-		State:      "NY",
-		PostalCode: "10001",
-		Country:    "USA",
-	}
-	bank1.ContactEmail = "contact@fnb.com"
-	blockchain.RegisterBank(bank1)
+func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService, keyManager *crypto.KeyManager, store storage.Storage) {
+	// func setupDemoData(authService *auth.AuthService, keyManager *crypto.KeyManager) {
 
-	bank2 := models.NewBank("BANK00000002", "Global Trust Bank", "GTB", "USA", "LIC-002", "")
-	bank2.Address = models.Address{
-		Street:     "456 Banking Avenue",
-		City:       "Los Angeles",
-		State:      "CA",
-		PostalCode: "90001",
-		Country:    "USA",
-	}
-	bank2.ContactEmail = "contact@gtb.com"
-	blockchain.RegisterBank(bank2)
+	// Only register banks if no data exists
+	if !blockchain.HasData() {
+		// Register demo banks
+		bank1 := models.NewBank("BANK00000001", "First National Bank", "FNB", "USA", "LIC-001", "")
+		bank1.Address = models.Address{
+			Street:     "123 Financial District",
+			City:       "New York",
+			State:      "NY",
+			PostalCode: "10001",
+			Country:    "USA",
+		}
+		bank1.ContactEmail = "contact@fnb.com"
+		blockchain.RegisterBank(bank1)
 
-	log.Println("   ✓ Demo banks registered")
+		// Save to database if available
+		if store != nil {
+			store.SaveBank(bank1)
+		}
+
+		bank2 := models.NewBank("BANK00000002", "Global Trust Bank", "GTB", "USA", "LIC-002", "")
+		bank2.Address = models.Address{
+			Street:     "456 Banking Avenue",
+			City:       "Los Angeles",
+			State:      "CA",
+			PostalCode: "90001",
+			Country:    "USA",
+		}
+		bank2.ContactEmail = "contact@gtb.com"
+		blockchain.RegisterBank(bank2)
+
+		// Save to database if available
+		if store != nil {
+			store.SaveBank(bank2)
+		}
+
+		log.Println("   ✓ Demo banks registered")
+	} else {
+		log.Println("   ✓ Skipping bank registration - existing data recovered")
+	}
 
 	// Register demo users
 	adminUser := &auth.RegisterRequest{
@@ -353,4 +477,77 @@ func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService,
 	log.Println("   Bank Admin:   bank_admin / bank123")
 	log.Println("   Bank Officer: bank_officer / officer123")
 	log.Println("   Auditor:      auditor / auditor123")
+}
+
+// handleGracefulShutdown handles graceful shutdown on SIGINT/SIGTERM
+func handleGracefulShutdown(monitoringService *monitoring.MonitoringService, store storage.Storage, consensusEngine consensus.Consensus) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	fmt.Println("\n\n==============================================")
+	fmt.Println("   Shutting down gracefully...")
+	fmt.Println("==============================================")
+
+	// Stop monitoring service
+	if monitoringService != nil {
+		log.Println("   Stopping monitoring service...")
+		monitoringService.Stop()
+	}
+
+	// Stop consensus engine
+	if consensusEngine != nil {
+		log.Println("   Stopping consensus engine...")
+		consensusEngine.Stop()
+	}
+
+	// Close database connection
+	if store != nil {
+		log.Println("   Closing database connection...")
+		store.Close()
+	}
+
+	log.Println("   ✓ Shutdown complete")
+	fmt.Println("   Goodbye!")
+	os.Exit(0)
+}
+
+// printAPIEndpoints prints available API endpoints
+func printAPIEndpoints(cfg *config.Config) {
+	fmt.Println()
+	fmt.Println("==============================================")
+	fmt.Printf("   Server running on http://%s:%d\n", cfg.Server.Host, cfg.Server.Port)
+	fmt.Println("==============================================")
+	fmt.Println()
+	fmt.Println("API Endpoints:")
+	fmt.Println("  POST   /api/v1/auth/register     - Register user")
+	fmt.Println("  POST   /api/v1/auth/login        - Login")
+	fmt.Println("  POST   /api/v1/auth/refresh      - Refresh token")
+	fmt.Println("  GET    /api/v1/auth/profile      - Get profile")
+	fmt.Println()
+	fmt.Println("  POST   /api/v1/kyc               - Create KYC")
+	fmt.Println("  GET    /api/v1/kyc               - Get KYC")
+	fmt.Println("  PUT    /api/v1/kyc               - Update KYC")
+	fmt.Println("  DELETE /api/v1/kyc               - Delete KYC")
+	fmt.Println("  GET    /api/v1/kyc/list          - List KYC records")
+	fmt.Println("  POST   /api/v1/kyc/verify        - Verify KYC")
+	fmt.Println("  POST   /api/v1/kyc/auto-verify   - Auto Verify KYC")
+	fmt.Println("  POST   /api/v1/kyc/reject        - Reject KYC")
+	fmt.Println()
+	fmt.Println("  POST   /api/v1/banks             - Register bank")
+	fmt.Println("  GET    /api/v1/banks             - Get bank")
+	fmt.Println("  GET    /api/v1/banks/list        - List banks")
+	fmt.Println()
+	fmt.Println("  GET    /api/v1/blockchain/stats  - Blockchain stats")
+	fmt.Println("  GET    /api/v1/blockchain/blocks - Get blocks")
+	fmt.Println("  POST   /api/v1/blockchain/mine   - Mine block")
+	fmt.Println("  GET    /api/v1/blockchain/pending - Get pending transactions")
+	fmt.Println("  GET    /api/v1/blockchain/validate - Validate chain")
+	fmt.Println()
+	fmt.Println("  GET    /api/v1/audit/logs        - Get audit logs")
+	fmt.Println("  GET    /api/v1/security/alerts   - Get security alerts")
+	fmt.Println("  POST   /api/v1/security/alerts/review - Review alert")
+	fmt.Println()
+	fmt.Println("  GET    /health                   - Health check")
+	fmt.Println()
 }
