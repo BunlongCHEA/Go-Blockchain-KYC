@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+    app.kubernetes.io/part-of: kyc-system

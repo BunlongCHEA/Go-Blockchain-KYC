@@ -34,6 +34,15 @@ type Consensus interface {
 
 	// Stop stops the consensus mechanism
 	Stop() error
+
+	// UpdateNodes updates the list of consensus nodes (for dynamic discovery)
+	UpdateNodes(nodes []Node)
+
+	// GetNodes returns all known nodes
+	GetNodes() []Node
+
+	// GetNodeID returns this node's ID
+	GetNodeID() string
 }
 
 // ConsensusState represents the current state of consensus
@@ -53,6 +62,8 @@ type Node struct {
 	Address   string `json:"address"`
 	PublicKey string `json:"public_key"`
 	IsActive  bool   `json:"is_active"`
+	IP        string `json:"ip"`
+	IsSelf    bool   `json:"is_self"`
 }
 
 // Message represents a consensus message
@@ -94,4 +105,34 @@ func NewConsensus(config ConsensusConfig) Consensus {
 	default:
 		return NewPBFT(config)
 	}
+}
+
+// NewConsensus creates consensus with Kubernetes discovery
+func NewConsensusWithKubernetes() Consensus {
+	discovery := NewKubernetesDiscovery()
+
+	// Get unique node ID from pod name
+	nodeID := discovery.GetNodeID()
+	if nodeID == "" {
+		nodeID = "standalone-node"
+	}
+
+	// Discover peer nodes
+	nodes, _ := discovery.DiscoverNodes()
+
+	config := ConsensusConfig{
+		Type:    ConsensusRaft,
+		NodeID:  nodeID,
+		Nodes:   nodes,
+		Timeout: 1000,
+	}
+
+	consensus := NewConsensus(config)
+
+	// Watch for node changes
+	discovery.WatchNodes(func(updatedNodes []Node) {
+		consensus.UpdateNodes(updatedNodes)
+	})
+
+	return consensus
 }

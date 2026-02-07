@@ -274,3 +274,48 @@ func (p *PBFT) getRequiredVotes() int {
 func (p *PBFT) GetCommitChannel() <-chan *models.Block {
 	return p.commitChan
 }
+
+// UpdateNodes updates the list of consensus nodes
+func (p *PBFT) UpdateNodes(nodes []Node) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	p.nodes = nodes
+
+	// Update leader if current leader is no longer in the list
+	leaderFound := false
+	for _, node := range nodes {
+		if node.ID == p.leader {
+			leaderFound = true
+			break
+		}
+	}
+
+	// If leader not found, elect new leader (first active node)
+	if !leaderFound && len(nodes) > 0 {
+		for _, node := range nodes {
+			if node.IsActive {
+				p.leader = node.ID
+				break
+			}
+		}
+	}
+}
+
+// GetNodes returns all known nodes
+func (p *PBFT) GetNodes() []Node {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	// Return a copy
+	nodes := make([]Node, len(p.nodes))
+	copy(nodes, p.nodes)
+	return nodes
+}
+
+// GetNodeID returns this node's ID
+func (p *PBFT) GetNodeID() string {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.nodeID
+}

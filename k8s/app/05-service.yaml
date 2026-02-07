@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyc-blockchain-service
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: kyc-blockchain
+
+---
+# Headless service for StatefulSet/Consensus
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyc-blockchain-headless
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kyc-blockchain

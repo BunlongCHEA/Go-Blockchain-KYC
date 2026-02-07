@@ -548,6 +548,18 @@ func printAPIEndpoints(cfg *config.Config) {
 	fmt.Println("  GET    /api/v1/security/alerts   - Get security alerts")
 	fmt.Println("  POST   /api/v1/security/alerts/review - Review alert")
 	fmt.Println()
+	fmt.Println("  POST   /api/v1/certificate/issue   - Issue verification certificate")
+	fmt.Println("  POST   /api/v1/certificate/verify  - Verify certificate (Public)")
+	fmt.Println()
+	fmt.Println("  GET    /api/v1/alerts/renewal      - Get renewal alerts")
+	fmt.Println("  POST   /api/v1/alerts/renewal/configure - Configure renewal alerts")
+	fmt.Println()
+
+	fmt.Println("  POST   /api/v1/keys/generate     - Generate key pair for external service")
+	fmt.Println("  GET    /api/v1/keys              - List all requester keys (Admin)")
+	fmt.Println("  GET    /api/v1/keys/info         - Get key info by ID or name")
+	fmt.Println("  POST   /api/v1/keys/revoke       - Revoke a requester key (Admin)")
+	fmt.Println()
 	fmt.Println("  GET    /health                   - Health check")
 	fmt.Println()
 }

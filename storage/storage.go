@@ -62,4 +62,12 @@ type Storage interface {
 	UpdateRenewalAlertStatus(alertID string, status models.RenewalAlertStatus) error
 	UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error
 	GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error)
+
+	// Requester Key operations
+	SaveRequesterKey(key *models.RequesterKeyInfo) error
+	GetRequesterKeyByID(keyID string) (*models.RequesterKeyInfo, error)
+	GetRequesterKeyByName(keyName string) (*models.RequesterKeyInfo, error)
+	GetAllRequesterKeys() ([]*models.RequesterKeyInfo, error)
+	RevokeRequesterKey(keyID string) error
+	UpdateRequesterKeyLastUsed(keyID string) error
 }

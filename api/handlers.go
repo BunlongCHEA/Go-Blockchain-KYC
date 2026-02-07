@@ -1,10 +1,21 @@
 package api
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"Go-Blockchain-KYC/auth"
@@ -55,6 +66,42 @@ type ConfigureRenewalAlertRequest struct {
 	CertificateID  string `json:"certificate_id"`
 	WebhookURL     string `json:"webhook_url,omitempty"`
 	EmailRecipient string `json:"email_recipient,omitempty"`
+}
+
+// GenerateKeyPairRequest represents request to generate key pair
+type GenerateKeyPairRequest struct {
+	KeyName      string `json:"key_name"`     // e.g., "transaction-service-001"
+	KeyType      string `json:"key_type"`     // "RSA" or "ECDSA"
+	KeySize      int    `json:"key_size"`     // RSA:  2048, 4096; ECDSA: 256, 384, 521
+	Organization string `json:"organization"` // e.g., "Acme Corp"
+	Email        string `json:"email"`        // Contact email
+	Description  string `json:"description"`  // Purpose of the key
+}
+
+// GeneratedKeyPairResponse represents the response after key generation
+type GeneratedKeyPairResponse struct {
+	KeyID          string `json:"key_id"`
+	KeyName        string `json:"key_name"`
+	KeyType        string `json:"key_type"`
+	KeySize        int    `json:"key_size"`
+	PublicKeyPEM   string `json:"public_key_pem"`
+	PrivateKeyPEM  string `json:"private_key_pem"` // Only shown once!
+	PublicKeyPath  string `json:"public_key_path"`
+	PrivateKeyPath string `json:"private_key_path"`
+	Fingerprint    string `json:"fingerprint"`
+	CreatedAt      string `json:"created_at"`
+	ExpiresAt      string `json:"expires_at"` // Key validity (e.g., 2 years)
+	Organization   string `json:"organization"`
+	Email          string `json:"email"`
+	Description    string `json:"description"`
+}
+
+// GeneratedKeyPair holds the generated key pair data
+type GeneratedKeyPair struct {
+	PrivateKey    interface{}
+	PublicKey     interface{}
+	PrivateKeyPEM string
+	PublicKeyPEM  string
 }
 
 const (
@@ -989,6 +1036,482 @@ func (h *Handlers) ReviewSecurityAlert(w http.ResponseWriter, r *http.Request) {
 		"reviewed_by": user.ID,
 		"action":      req.Action,
 		"reviewed_at": time.Now().Format(time.RFC3339),
+	})
+}
+
+// ==================== Generate Key-Pair For Certificate Handlers ====================
+
+// GenerateRequesterKeyPair generates a key pair for external service
+func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req GenerateKeyPairRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	// Validate request
+	if err := validateKeyPairRequest(&req); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// Sanitize key name (remove special characters)
+	req.KeyName = sanitizeKeyName(req.KeyName)
+
+	// Check if key name already exists
+	if h.storage != nil {
+		existing, _ := h.storage.GetRequesterKeyByName(req.KeyName)
+		if existing != nil {
+			SendBadRequest(w, fmt.Sprintf("key name '%s' already exists", req.KeyName))
+			return
+		}
+	}
+
+	// Generate key pair
+	keyPair, err := generateKeyPair(req.KeyType, req.KeySize)
+	if err != nil {
+		SendInternalError(w, "failed to generate key pair: "+err.Error())
+		return
+	}
+
+	// Get download directory based on OS
+	downloadDir := getDefaultDownloadDir()
+
+	// Create key directory if not exists
+	keyDir := filepath.Join(downloadDir, "kyc-blockchain-keys")
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		SendInternalError(w, "failed to create key directory: "+err.Error())
+		return
+	}
+
+	// Generate file paths
+	privateKeyPath := filepath.Join(keyDir, req.KeyName+"_private. pem")
+	publicKeyPath := filepath.Join(keyDir, req.KeyName+"_public. pem")
+
+	// Save private key to file
+	if err := saveKeyToFile(privateKeyPath, keyPair.PrivateKeyPEM, 0600); err != nil {
+		SendInternalError(w, "failed to save private key:  "+err.Error())
+		return
+	}
+
+	// Save public key to file
+	if err := saveKeyToFile(publicKeyPath, keyPair.PublicKeyPEM, 0644); err != nil {
+		// Cleanup private key if public key fails
+		os.Remove(privateKeyPath)
+		SendInternalError(w, "failed to save public key: "+err.Error())
+		return
+	}
+
+	// Generate key ID and fingerprint
+	keyID := generateKeyID(req.KeyName)
+	fingerprint := generateFingerprint(keyPair.PublicKeyPEM)
+
+	now := time.Now()
+	expiresAt := now.AddDate(2, 0, 0) // 2 years validity
+
+	// Prepare response
+	response := &GeneratedKeyPairResponse{
+		KeyID:          keyID,
+		KeyName:        req.KeyName,
+		KeyType:        req.KeyType,
+		KeySize:        req.KeySize,
+		PublicKeyPEM:   keyPair.PublicKeyPEM,
+		PrivateKeyPEM:  keyPair.PrivateKeyPEM, // Only shown once!
+		PublicKeyPath:  publicKeyPath,
+		PrivateKeyPath: privateKeyPath,
+		Fingerprint:    fingerprint,
+		CreatedAt:      now.Format(time.RFC3339),
+		ExpiresAt:      expiresAt.Format(time.RFC3339),
+		Organization:   req.Organization,
+		Email:          req.Email,
+		Description:    req.Description,
+	}
+
+	// Save requester info to database (without private key!)
+	if h.storage != nil {
+		requesterInfo := &models.RequesterKeyInfo{
+			ID:           keyID,
+			KeyName:      req.KeyName,
+			KeyType:      req.KeyType,
+			KeySize:      req.KeySize,
+			PublicKeyPEM: keyPair.PublicKeyPEM,
+			Fingerprint:  fingerprint,
+			Organization: req.Organization,
+			Email:        req.Email,
+			Description:  req.Description,
+			IsActive:     true,
+			CreatedAt:    now.Unix(),
+			ExpiresAt:    expiresAt.Unix(),
+			CreatedBy:    user.ID,
+		}
+
+		if err := h.storage.SaveRequesterKey(requesterInfo); err != nil {
+			// Cleanup files if database save fails
+			os.Remove(privateKeyPath)
+			os.Remove(publicKeyPath)
+			SendInternalError(w, "failed to save requester info: "+err.Error())
+			return
+		}
+
+		// Save to audit log
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       user.ID,
+			Action:       "REQUESTER_KEYPAIR_GENERATED",
+			ResourceType: "REQUESTER_KEY",
+			ResourceID:   keyID,
+			Details: map[string]interface{}{
+				"key_id":           keyID,
+				"key_name":         req.KeyName,
+				"key_type":         req.KeyType,
+				"key_size":         req.KeySize,
+				"organization":     req.Organization,
+				"email":            req.Email,
+				"fingerprint":      fingerprint,
+				"expires_at":       expiresAt.Unix(),
+				"public_key_path":  publicKeyPath,
+				"private_key_path": privateKeyPath,
+			},
+			IPAddress: getClientIP(r),
+			CreatedAt: time.Now(),
+		})
+	}
+
+	// Return response with all info
+	SendCreated(w, "Key pair generated successfully", map[string]interface{}{
+		"key_pair": response,
+		"security_notice": map[string]string{
+			"warning":     "SAVE YOUR PRIVATE KEY NOW! It will not be shown again.",
+			"private_key": "Keep private key secure and never share it",
+			"public_key":  "Share public key with KYC service for certificate requests",
+			"backup":      "Create a secure backup of your private key",
+		},
+		"usage_instructions": map[string]string{
+			"step_1": "Store the private key securely",
+			"step_2": "Use the public_key_pem when calling /api/v1/certificate/issue",
+			"step_3": "Sign your requests with the private key for authentication",
+			"step_4": "Key expires on " + expiresAt.Format("2006-01-02") + " - renew before expiry",
+		},
+		"files_saved": map[string]string{
+			"private_key": privateKeyPath,
+			"public_key":  publicKeyPath,
+			"directory":   keyDir,
+		},
+	})
+}
+
+// validateKeyPairRequest validates the key pair request
+func validateKeyPairRequest(req *GenerateKeyPairRequest) error {
+	if req.KeyName == "" {
+		return fmt.Errorf("key_name is required")
+	}
+	if len(req.KeyName) < 3 || len(req.KeyName) > 50 {
+		return fmt.Errorf("key_name must be between 3 and 50 characters")
+	}
+
+	// Validate key type
+	req.KeyType = strings.ToUpper(req.KeyType)
+	if req.KeyType != "RSA" && req.KeyType != "ECDSA" {
+		return fmt.Errorf("key_type must be 'RSA' or 'ECDSA'")
+	}
+
+	// Validate key size based on type
+	if req.KeyType == "RSA" {
+		validSizes := map[int]bool{2048: true, 3072: true, 4096: true}
+		if !validSizes[req.KeySize] {
+			return fmt.Errorf("RSA key_size must be 2048, 3072, or 4096")
+		}
+	} else if req.KeyType == "ECDSA" {
+		validSizes := map[int]bool{256: true, 384: true, 521: true}
+		if !validSizes[req.KeySize] {
+			return fmt.Errorf("ECDSA key_size must be 256, 384, or 521")
+		}
+	}
+
+	if req.Organization == "" {
+		return fmt.Errorf("organization is required")
+	}
+
+	if req.Email == "" {
+		return fmt.Errorf("email is required")
+	}
+
+	return nil
+}
+
+// sanitizeKeyName removes special characters from key name
+func sanitizeKeyName(name string) string {
+	// Replace spaces with dashes
+	name = strings.ReplaceAll(name, " ", "-")
+
+	// Keep only alphanumeric, dash, underscore
+	var result strings.Builder
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' {
+			result.WriteRune(c)
+		}
+	}
+
+	return strings.ToLower(result.String())
+}
+
+// getDefaultDownloadDir returns the default download directory based on OS
+func getDefaultDownloadDir() string {
+	var downloadDir string
+
+	switch runtime.GOOS {
+	case "windows":
+		// Windows: C:\Users\<username>\Downloads
+		downloadDir = filepath.Join(os.Getenv("USERPROFILE"), "Downloads")
+	case "darwin":
+		// macOS: /Users/<username>/Downloads
+		downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
+	case "linux":
+		// Linux: /home/<username>/Downloads or XDG_DOWNLOAD_DIR
+		xdgDownload := os.Getenv("XDG_DOWNLOAD_DIR")
+		if xdgDownload != "" {
+			downloadDir = xdgDownload
+		} else {
+			downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
+		}
+	default:
+		// Fallback to home directory
+		downloadDir = os.Getenv("HOME")
+		if downloadDir == "" {
+			downloadDir = "."
+		}
+	}
+
+	return downloadDir
+}
+
+// generateKeyPair generates RSA or ECDSA key pair
+func generateKeyPair(keyType string, keySize int) (*GeneratedKeyPair, error) {
+	var privateKey interface{}
+	var publicKey interface{}
+	var privateKeyPEM, publicKeyPEM string
+
+	switch keyType {
+	case "RSA":
+		rsaKey, err := rsa.GenerateKey(rand.Reader, keySize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+		}
+		privateKey = rsaKey
+		publicKey = &rsaKey.PublicKey
+
+		// Encode private key to PEM
+		privateKeyBytes := x509.MarshalPKCS1PrivateKey(rsaKey)
+		privateKeyPEM = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: privateKeyBytes,
+		}))
+
+		// Encode public key to PEM
+		publicKeyBytes := x509.MarshalPKCS1PublicKey(&rsaKey.PublicKey)
+		publicKeyPEM = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "RSA PUBLIC KEY",
+			Bytes: publicKeyBytes,
+		}))
+
+	case "ECDSA":
+		var curve elliptic.Curve
+		switch keySize {
+		case 256:
+			curve = elliptic.P256()
+		case 384:
+			curve = elliptic.P384()
+		case 521:
+			curve = elliptic.P521()
+		default:
+			curve = elliptic.P256()
+		}
+
+		ecdsaKey, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate ECDSA key: %w", err)
+		}
+		privateKey = ecdsaKey
+		publicKey = &ecdsaKey.PublicKey
+
+		// Encode private key to PEM
+		privateKeyBytes, err := x509.MarshalECPrivateKey(ecdsaKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal ECDSA private key: %w", err)
+		}
+		privateKeyPEM = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "EC PRIVATE KEY",
+			Bytes: privateKeyBytes,
+		}))
+
+		// Encode public key to PEM
+		publicKeyBytes, err := x509.MarshalPKIXPublicKey(&ecdsaKey.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal ECDSA public key: %w", err)
+		}
+		publicKeyPEM = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: publicKeyBytes,
+		}))
+
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", keyType)
+	}
+
+	return &GeneratedKeyPair{
+		PrivateKey:    privateKey,
+		PublicKey:     publicKey,
+		PrivateKeyPEM: privateKeyPEM,
+		PublicKeyPEM:  publicKeyPEM,
+	}, nil
+}
+
+// saveKeyToFile saves key content to a file with specified permissions
+func saveKeyToFile(path, content string, perm os.FileMode) error {
+	return os.WriteFile(path, []byte(content), perm)
+}
+
+// generateKeyID generates a unique key ID
+func generateKeyID(keyName string) string {
+	return fmt.Sprintf("KEY_%s_%d", strings.ToUpper(keyName[:min(8, len(keyName))]), time.Now().UnixNano()%1000000)
+}
+
+// generateFingerprint generates a fingerprint from public key
+func generateFingerprint(publicKeyPEM string) string {
+	// Simple hash-based fingerprint
+	hash := sha256.Sum256([]byte(publicKeyPEM))
+	return fmt.Sprintf("SHA256:%x", hash[:8])
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// GetRequesterKeys returns list of registered requester keys
+func (h *Handlers) GetRequesterKeys(w http.ResponseWriter, r *http.Request) {
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	keys, err := h.storage.GetAllRequesterKeys()
+	if err != nil {
+		SendInternalError(w, "failed to get requester keys: "+err.Error())
+		return
+	}
+
+	SendSuccess(w, "", map[string]interface{}{
+		"keys":  keys,
+		"count": len(keys),
+	})
+}
+
+// GetRequesterKeyByID returns a specific requester key
+func (h *Handlers) GetRequesterKeyByID(w http.ResponseWriter, r *http.Request) {
+	keyID := r.URL.Query().Get("key_id")
+	keyName := r.URL.Query().Get("key_name")
+
+	if keyID == "" && keyName == "" {
+		SendBadRequest(w, "key_id or key_name is required")
+		return
+	}
+
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	var key *models.RequesterKeyInfo
+	var err error
+
+	if keyID != "" {
+		key, err = h.storage.GetRequesterKeyByID(keyID)
+	} else {
+		key, err = h.storage.GetRequesterKeyByName(keyName)
+	}
+
+	if err != nil {
+		SendNotFound(w, "requester key not found")
+		return
+	}
+
+	SendSuccess(w, "", map[string]interface{}{
+		"key": key,
+	})
+}
+
+// RevokeRequesterKey revokes a requester key
+func (h *Handlers) RevokeRequesterKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req struct {
+		KeyID  string `json:"key_id"`
+		Reason string `json:"reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	if req.KeyID == "" {
+		SendBadRequest(w, "key_id is required")
+		return
+	}
+
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	// Get key info first
+	key, err := h.storage.GetRequesterKeyByID(req.KeyID)
+	if err != nil {
+		SendNotFound(w, "requester key not found")
+		return
+	}
+
+	// Revoke the key
+	if err := h.storage.RevokeRequesterKey(req.KeyID); err != nil {
+		SendInternalError(w, "failed to revoke key: "+err.Error())
+		return
+	}
+
+	// Save to audit log
+	h.storage.SaveAuditLog(&models.AuditLog{
+		UserID:       user.ID,
+		Action:       "REQUESTER_KEY_REVOKED",
+		ResourceType: "REQUESTER_KEY",
+		ResourceID:   req.KeyID,
+		Details: map[string]interface{}{
+			"key_id":       req.KeyID,
+			"key_name":     key.KeyName,
+			"organization": key.Organization,
+			"reason":       req.Reason,
+		},
+		IPAddress: getClientIP(r),
+		CreatedAt: time.Now(),
+	})
+
+	SendSuccess(w, "Requester key revoked successfully", map[string]interface{}{
+		"key_id":     req.KeyID,
+		"key_name":   key.KeyName,
+		"revoked_at": time.Now().Format(time.RFC3339),
+		"revoked_by": user.ID,
 	})
 }
 

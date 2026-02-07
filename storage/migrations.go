@@ -126,6 +126,26 @@ var Migrations = []string{
 		created_at BIGINT NOT NULL
 	)`,
 
+	// Create requester_keys table
+	`CREATE TABLE IF NOT EXISTS requester_keys (
+		id VARCHAR(50) PRIMARY KEY,
+		key_name VARCHAR(100) UNIQUE NOT NULL,
+		key_type VARCHAR(10) NOT NULL,
+		key_size INT NOT NULL,
+		public_key_pem TEXT NOT NULL,
+		fingerprint VARCHAR(100) NOT NULL,
+		organization VARCHAR(255) NOT NULL,
+		email VARCHAR(255) NOT NULL,
+		description TEXT,
+		is_active BOOLEAN DEFAULT TRUE,
+		created_at BIGINT NOT NULL,
+		expires_at BIGINT NOT NULL,
+		created_by VARCHAR(50) NOT NULL,
+		last_used_at BIGINT,
+		revoked_at BIGINT,
+		revoked_by VARCHAR(50)
+	)`,
+
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)`,
@@ -137,4 +157,7 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_status ON renewal_alerts(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_alert_date ON renewal_alerts(alert_date)`,
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_requester ON renewal_alerts(requester_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_requester_keys_name ON requester_keys(key_name)`,
+	`CREATE INDEX IF NOT EXISTS idx_requester_keys_fingerprint ON requester_keys(fingerprint)`,
+	`CREATE INDEX IF NOT EXISTS idx_requester_keys_active ON requester_keys(is_active)`,
 }

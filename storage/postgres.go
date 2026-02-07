@@ -1329,6 +1329,8 @@ func (p *PostgresStorage) LoadAllBanks() ([]*models.Bank, error) {
 	return banks, nil
 }
 
+// ==================== Renewal Alert Operations ====================
+
 // SaveRenewalAlert saves a renewal alert
 func (p *PostgresStorage) SaveRenewalAlert(alert *models.RenewalAlert) error {
 	query := `
@@ -1484,4 +1486,244 @@ func (p *PostgresStorage) GetRenewalAlertsByRequester(requesterID string) ([]*mo
 	}
 
 	return alerts, nil
+}
+
+// ==================== Requester Key Operations ====================
+
+// SaveRequesterKey saves a requester key info
+func (p *PostgresStorage) SaveRequesterKey(key *models.RequesterKeyInfo) error {
+	query := `
+		INSERT INTO requester_keys (
+			id, key_name, key_type, key_size, public_key_pem, fingerprint,
+			organization, email, description, is_active, created_at, expires_at, created_by
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`
+
+	_, err := p.db.Exec(query,
+		key.ID,
+		key.KeyName,
+		key.KeyType,
+		key.KeySize,
+		key.PublicKeyPEM,
+		key.Fingerprint,
+		key.Organization,
+		key.Email,
+		key.Description,
+		key.IsActive,
+		key.CreatedAt,
+		key.ExpiresAt,
+		key.CreatedBy,
+	)
+
+	return err
+}
+
+// GetRequesterKeyByID retrieves a requester key by ID
+func (p *PostgresStorage) GetRequesterKeyByID(keyID string) (*models.RequesterKeyInfo, error) {
+	query := `
+		SELECT id, key_name, key_type, key_size, public_key_pem, fingerprint,
+			organization, email, description, is_active, created_at, expires_at, 
+			created_by, last_used_at
+		FROM requester_keys WHERE id = $1
+	`
+
+	key := &models.RequesterKeyInfo{}
+	var lastUsedAt sql.NullInt64
+	var description sql.NullString
+
+	err := p.db.QueryRow(query, keyID).Scan(
+		&key.ID,
+		&key.KeyName,
+		&key.KeyType,
+		&key.KeySize,
+		&key.PublicKeyPEM,
+		&key.Fingerprint,
+		&key.Organization,
+		&key.Email,
+		&description,
+		&key.IsActive,
+		&key.CreatedAt,
+		&key.ExpiresAt,
+		&key.CreatedBy,
+		&lastUsedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("key not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if description.Valid {
+		key.Description = description.String
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Int64
+	}
+
+	return key, nil
+}
+
+// GetRequesterKeyByName retrieves a requester key by name
+func (p *PostgresStorage) GetRequesterKeyByName(keyName string) (*models.RequesterKeyInfo, error) {
+	query := `
+		SELECT id, key_name, key_type, key_size, public_key_pem, fingerprint,
+			organization, email, description, is_active, created_at, expires_at, 
+			created_by, last_used_at
+		FROM requester_keys WHERE key_name = $1
+	`
+
+	key := &models.RequesterKeyInfo{}
+	var lastUsedAt sql.NullInt64
+	var description sql.NullString
+
+	err := p.db.QueryRow(query, keyName).Scan(
+		&key.ID,
+		&key.KeyName,
+		&key.KeyType,
+		&key.KeySize,
+		&key.PublicKeyPEM,
+		&key.Fingerprint,
+		&key.Organization,
+		&key.Email,
+		&description,
+		&key.IsActive,
+		&key.CreatedAt,
+		&key.ExpiresAt,
+		&key.CreatedBy,
+		&lastUsedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("key not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if description.Valid {
+		key.Description = description.String
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Int64
+	}
+
+	return key, nil
+}
+
+// GetRequesterKeyByFingerprint retrieves a requester key by fingerprint
+func (p *PostgresStorage) GetRequesterKeyByFingerprint(fingerprint string) (*models.RequesterKeyInfo, error) {
+	query := `
+		SELECT id, key_name, key_type, key_size, public_key_pem, fingerprint,
+			organization, email, description, is_active, created_at, expires_at, 
+			created_by, last_used_at
+		FROM requester_keys WHERE fingerprint = $1 AND is_active = TRUE
+	`
+
+	key := &models.RequesterKeyInfo{}
+	var lastUsedAt sql.NullInt64
+	var description sql.NullString
+
+	err := p.db.QueryRow(query, fingerprint).Scan(
+		&key.ID,
+		&key.KeyName,
+		&key.KeyType,
+		&key.KeySize,
+		&key.PublicKeyPEM,
+		&key.Fingerprint,
+		&key.Organization,
+		&key.Email,
+		&description,
+		&key.IsActive,
+		&key.CreatedAt,
+		&key.ExpiresAt,
+		&key.CreatedBy,
+		&lastUsedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("key not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if description.Valid {
+		key.Description = description.String
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Int64
+	}
+
+	return key, nil
+}
+
+// GetAllRequesterKeys retrieves all requester keys
+func (p *PostgresStorage) GetAllRequesterKeys() ([]*models.RequesterKeyInfo, error) {
+	query := `
+		SELECT id, key_name, key_type, key_size, public_key_pem, fingerprint,
+			organization, email, description, is_active, created_at, expires_at, 
+			created_by, last_used_at
+		FROM requester_keys
+		ORDER BY created_at DESC
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []*models.RequesterKeyInfo
+	for rows.Next() {
+		key := &models.RequesterKeyInfo{}
+		var lastUsedAt sql.NullInt64
+		var description sql.NullString
+
+		err := rows.Scan(
+			&key.ID,
+			&key.KeyName,
+			&key.KeyType,
+			&key.KeySize,
+			&key.PublicKeyPEM,
+			&key.Fingerprint,
+			&key.Organization,
+			&key.Email,
+			&description,
+			&key.IsActive,
+			&key.CreatedAt,
+			&key.ExpiresAt,
+			&key.CreatedBy,
+			&lastUsedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if description.Valid {
+			key.Description = description.String
+		}
+		if lastUsedAt.Valid {
+			key.LastUsedAt = &lastUsedAt.Int64
+		}
+
+		keys = append(keys, key)
+	}
+
+	return keys, nil
+}
+
+// RevokeRequesterKey revokes a requester key
+func (p *PostgresStorage) RevokeRequesterKey(keyID string) error {
+	query := `UPDATE requester_keys SET is_active = FALSE, revoked_at = $1 WHERE id = $2`
+	_, err := p.db.Exec(query, time.Now().Unix(), keyID)
+	return err
+}
+
+// UpdateRequesterKeyLastUsed updates the last used timestamp
+func (p *PostgresStorage) UpdateRequesterKeyLastUsed(keyID string) error {
+	query := `UPDATE requester_keys SET last_used_at = $1 WHERE id = $2`
+	_, err := p.db.Exec(query, time.Now().Unix(), keyID)
+	return err
 }

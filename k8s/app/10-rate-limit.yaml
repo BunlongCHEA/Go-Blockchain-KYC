@@ -1,0 +1,64 @@
+# Rate limiting using Envoy Gateway
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: kyc-rate-limit
+  namespace: kyc-blockchain
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: kyc-blockchain-route
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        # General API rate limit
+        - clientSelectors:
+            - headers:
+                - name: Authorization
+                  type: Distinct
+          limit:
+            requests: 100
+            unit: Minute
+        
+        # Stricter limit for unauthenticated requests
+        - clientSelectors:
+            - headers:
+                - name: Authorization
+                  type: Distinct
+                  invert: true
+          limit:
+            requests: 20
+            unit: Minute
+
+---
+# Security Policy
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: kyc-security-policy
+  namespace: kyc-blockchain
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: kyc-gateway
+  cors:
+    allowOrigins:
+      # - "https://yourdomain.com"
+      - "https://kyc.bunlong.uk"
+    allowMethods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - OPTIONS
+    allowHeaders:
+      - Authorization
+      - Content-Type
+      - X-Request-ID
+    exposeHeaders:
+      - X-Request-ID
+    maxAge: 86400s
+    allowCredentials: true

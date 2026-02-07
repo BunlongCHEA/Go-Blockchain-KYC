@@ -456,3 +456,61 @@ func (r *Raft) IsLeader() bool {
 func (r *Raft) GetCommitChannel() <-chan *models.Block {
 	return r.commitChan
 }
+
+// UpdateNodes updates the list of consensus nodes
+func (r *Raft) UpdateNodes(nodes []Node) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	oldNodeCount := len(r.nodes)
+	r.nodes = nodes
+
+	// Reinitialize nextIndex and matchIndex for new nodes
+	for _, node := range nodes {
+		if _, exists := r.nextIndex[node.ID]; !exists {
+			r.nextIndex[node.ID] = r.getLastLogIndexUnlocked() + 1
+			r.matchIndex[node.ID] = 0
+		}
+	}
+
+	// Remove entries for nodes that are no longer present
+	currentNodeIDs := make(map[string]bool)
+	for _, node := range nodes {
+		currentNodeIDs[node.ID] = true
+	}
+
+	for nodeID := range r.nextIndex {
+		if !currentNodeIDs[nodeID] {
+			delete(r.nextIndex, nodeID)
+			delete(r.matchIndex, nodeID)
+		}
+	}
+
+	// Log node changes
+	if len(nodes) != oldNodeCount {
+		// Node count changed - may need to recalculate quorum
+	}
+}
+
+// GetNodes returns all known nodes
+func (r *Raft) GetNodes() []Node {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	// Return a copy
+	nodes := make([]Node, len(r.nodes))
+	copy(nodes, r.nodes)
+	return nodes
+}
+
+// GetNodeID returns this node's ID
+func (r *Raft) GetNodeID() string {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return r.nodeID
+}
+
+// getLastLogIndexUnlocked returns last log index without locking (caller must hold lock)
+func (r *Raft) getLastLogIndexUnlocked() int64 {
+	return int64(len(r.log))
+}

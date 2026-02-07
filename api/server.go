@@ -73,7 +73,7 @@ func (s *Server) Start() error {
 		Handler:      router,
 		ReadTimeout:  s.config.Server.ReadTimeout,
 		WriteTimeout: s.config.Server.WriteTimeout,
-		IdleTimeout:  120 * time.Second,
+		IdleTimeout:  s.config.Server.IdleTimeout,
 	}
 
 	// Configure TLS if certificates are provided

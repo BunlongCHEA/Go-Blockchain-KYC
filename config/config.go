@@ -23,6 +23,7 @@ type ServerConfig struct {
 	Port         int           `json:"port"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
+	IdleTimeout  time.Duration `json:"idle_timeout"`
 	TLSCertFile  string        `json:"tls_cert_file"`
 	TLSKeyFile   string        `json:"tls_key_file"`
 }
@@ -60,7 +61,8 @@ type CryptoConfig struct {
 
 // ConsensusConfig holds consensus configuration
 type ConsensusConfig struct {
-	Type              string        `json:"type"` // pbft or raft
+	Type              string        `json:"type"`      // pbft or raft
+	Namespace         string        `json:"namespace"` // Kubernetes namespace for service discovery
 	NodeID            string        `json:"node_id"`
 	Nodes             []string      `json:"nodes"`
 	ElectionTimeout   time.Duration `json:"election_timeout"`
@@ -149,6 +151,16 @@ func LoadConfig(path string) (*Config, error) {
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(config); err != nil {
 		return nil, err
+	}
+
+	// Override node_id with POD_NAME if available (Kubernetes)
+	if podName := os.Getenv("POD_NAME"); podName != "" {
+		config.Consensus.NodeID = podName
+	}
+
+	// Override nodes list with headless service discovery
+	if podNamespace := os.Getenv("POD_NAMESPACE"); podNamespace != "" {
+		config.Consensus.Namespace = podNamespace
 	}
 
 	return config, nil

@@ -148,6 +148,25 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin)(
 				http.HandlerFunc(handlers.ReviewSecurityAlert))))
 
+	// Requester Key Routes
+	mux.Handle("POST /api/v1/keys/generate",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GenerateRequesterKeyPair)))
+
+	mux.Handle("GET /api/v1/keys",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.GetRequesterKeys))))
+
+	mux.Handle("GET /api/v1/keys/info",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetRequesterKeyByID)))
+
+	mux.Handle("POST /api/v1/keys/revoke",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RevokeRequesterKey))))
+
 	// Certificate Routes
 	mux.Handle("POST /api/v1/certificate/issue",
 		middleware.Authenticate(

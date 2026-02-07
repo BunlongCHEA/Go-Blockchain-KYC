@@ -1,0 +1,93 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kyc-blockchain-network-policy
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyc-blockchain
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from Gateway
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway-system
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow traffic from same namespace
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow external HTTPS (for verification providers)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow from kyc-blockchain pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kyc-blockchain
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Allow all outbound traffic for PostgreSQL operations
+    - {}
+    # # Allow DNS only
+    # - to:
+    #     - namespaceSelector: {}
+    #   ports:
+    #     - protocol: UDP
+    #       port: 53

@@ -1,0 +1,133 @@
+# Install Gateway API CRDs first:
+# kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+
+---
+# GatewayClass - Using Envoy Gateway (open-source)
+# Install Envoy Gateway: https://gateway.envoyproxy.io/latest/install/install-helm/
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: custom-proxy-config
+    namespace: envoy-gateway-system
+
+---
+# Gateway - Entry point for traffic
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: kyc-gateway
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+  annotations:
+    # Cloudflare proxy annotations
+    external-dns.alpha.kubernetes.io/hostname: kyc-api.bunlong.uk
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+    # HTTP listener (redirects to HTTPS)
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    
+    # HTTPS listener
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: kyc-blockchain-tls
+            namespace: kyc-blockchain
+      allowedRoutes:
+        namespaces:
+          from: Same
+
+---
+# HTTPRoute - Route traffic to KYC service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kyc-blockchain-route
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+spec:
+  parentRefs:
+    - name: kyc-gateway
+      namespace: kyc-blockchain
+      sectionName: https
+  hostnames:
+    - "kyc-api.bunlong.uk"  # Change to your domain
+  rules:
+    # Health check - no auth required
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+
+    # Public certificate verification endpoint
+    - matches:
+        - path:
+            type: Exact
+            value: /api/v1/certificate/verify
+          method: POST
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+
+    # Auth endpoints
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/auth
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+
+    # All other API routes
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+      timeouts:
+        request: 30s
+        backendRequest: 25s
+
+---
+# HTTP to HTTPS Redirect
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kyc-http-redirect
+  namespace: kyc-blockchain
+spec:
+  parentRefs:
+    - name: kyc-gateway
+      namespace: kyc-blockchain
+      sectionName: http
+  hostnames:
+    - "kyc-api.bunlong.uk"
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
