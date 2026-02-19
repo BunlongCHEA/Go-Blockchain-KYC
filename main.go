@@ -231,6 +231,98 @@ func initializeStorage(cfg *config.Config) (storage.Storage, error) {
 
 // initializeConsensus initializes the consensus mechanism
 func initializeConsensus(cfg *config.Config) consensus.Consensus {
+	// Check if running in Kubernetes mode
+	if cfg.Consensus.DiscoveryMethod == "kubernetes" {
+		log.Println("   Using Kubernetes service discovery...")
+
+		// Set environment variables for Kubernetes discovery
+		if cfg.Consensus.Namespace != "" {
+			os.Setenv("POD_NAMESPACE", cfg.Consensus.Namespace)
+		}
+		if cfg.Consensus.HeadlessService != "" {
+			os.Setenv("HEADLESS_SERVICE", cfg.Consensus.HeadlessService)
+		}
+
+		// These should be set by Kubernetes downward API in deployment
+		// But we can log them for debugging
+		podName := os.Getenv("POD_NAME")
+		podIP := os.Getenv("POD_IP")
+
+		if podName == "" {
+			log.Println("   ⚠ POD_NAME not set, using hostname as fallback")
+			hostname, _ := os.Hostname()
+			os.Setenv("POD_NAME", hostname)
+			podName = hostname
+		}
+
+		if podIP == "" {
+			log.Println("   ⚠ POD_IP not set, auto-detection may be limited")
+		}
+
+		log.Printf("   Pod Name: %s", podName)
+		log.Printf("   Pod IP: %s", podIP)
+		log.Printf("   Namespace: %s", cfg.Consensus.Namespace)
+		log.Printf("   Headless Service: %s", cfg.Consensus.HeadlessService)
+
+		// Create Kubernetes discovery
+		discovery := consensus.NewKubernetesDiscovery()
+
+		// Get unique node ID from pod name
+		nodeID := discovery.GetNodeID()
+		if nodeID == "" {
+			nodeID = cfg.Consensus.NodeID
+			if nodeID == "" {
+				nodeID = "standalone-node"
+			}
+		}
+
+		// Discover peer nodes
+		log.Println("   Discovering peer nodes via DNS...")
+		nodes, err := discovery.DiscoverNodes()
+		if err != nil {
+			log.Printf("   ⚠ Node discovery failed: %v", err)
+			log.Println("   Starting in standalone mode")
+			nodes = []consensus.Node{
+				{
+					ID:       nodeID,
+					Address:  fmt.Sprintf("%s:8080", discovery.GetNodeIP()),
+					IP:       discovery.GetNodeIP(),
+					IsActive: true,
+					IsSelf:   true,
+				},
+			}
+		} else {
+			log.Printf("   ✓ Discovered %d nodes", len(nodes))
+			for _, node := range nodes {
+				if node.IsSelf {
+					log.Printf("     - %s (SELF) at %s", node.ID, node.Address)
+				} else {
+					log.Printf("     - %s at %s", node.ID, node.Address)
+				}
+			}
+		}
+
+		// Create consensus config
+		consensusConfig := consensus.ConsensusConfig{
+			Type:    consensus.ConsensusType(cfg.Consensus.Type),
+			NodeID:  nodeID,
+			Nodes:   nodes,
+			Timeout: int64(cfg.Consensus.ElectionTimeout / time.Millisecond),
+		}
+
+		// Create consensus engine
+		consensusEngine := consensus.NewConsensus(consensusConfig)
+
+		// Watch for node changes
+		log.Println("   Starting node discovery watcher...")
+		discovery.WatchNodes(func(updatedNodes []consensus.Node) {
+			log.Printf("   Node topology changed: %d nodes now available", len(updatedNodes))
+			consensusEngine.UpdateNodes(updatedNodes)
+		})
+
+		return consensusEngine
+	}
+
 	nodes := make([]consensus.Node, len(cfg.Consensus.Nodes))
 	for i, nodeID := range cfg.Consensus.Nodes {
 		nodes[i] = consensus.Node{

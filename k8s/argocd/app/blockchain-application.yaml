@@ -1,0 +1,22 @@
+# ArgoCD Application for E-commerce Stack
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyc-blockchain-app
+  namespace: argocd
+spec:
+  project: default
+  # Source configuration
+  source:
+    repoURL: https://gitlab.com/BunlongCHEA/Go-Blockchain-KYC.git
+    targetRevision: HEAD
+    path: k8s/app
+  # Destination cluster and namespace
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyc-blockchain
+  # Sync policy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

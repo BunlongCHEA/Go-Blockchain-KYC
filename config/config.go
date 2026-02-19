@@ -64,7 +64,9 @@ type ConsensusConfig struct {
 	Type              string        `json:"type"`      // pbft or raft
 	Namespace         string        `json:"namespace"` // Kubernetes namespace for service discovery
 	NodeID            string        `json:"node_id"`
-	Nodes             []string      `json:"nodes"`
+	Nodes             []string      `json:"nodes"`            // For static mode
+	DiscoveryMethod   string        `json:"discovery_method"` // "kubernetes" or "static"
+	HeadlessService   string        `json:"headless_service"`
 	ElectionTimeout   time.Duration `json:"election_timeout"`
 	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
 }

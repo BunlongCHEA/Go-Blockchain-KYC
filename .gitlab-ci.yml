@@ -1,0 +1,97 @@
+# .gitlab-ci.yml
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  KUBE_NAMESPACE: "kyc-blockchain"
+  
+  # Digital Ocean K3s Configuration
+  # DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
+  # DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
+  DO_K3S_SERVER: "129.212.232.144"
+  DO_K3S_TOKEN: "K10f70f11ef2e1f1236479c3d45026083f145878e33d358d536f679442d8579f686::server:806d2c45e6ffd06461a1962ded2ce404"
+
+stages:
+  - build
+  - deploy
+
+# Build and Push Docker Image
+build:
+  stage: build
+  image: docker:28.3.3
+  services:
+    - docker:28.3.3-dind
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - echo "✓ Docker image pushed successfully"
+  only:
+    - main
+    - develop
+
+# Deploy app & database to GKE using kubectl & ArgoCD
+deploy:
+  stage: deploy
+  image: alpine/k8s:1.32.11
+  before_script:
+    - echo "Setting up kubectl for Digital Ocean K3s..."
+    
+    # Create kubeconfig for K3s
+    - mkdir -p ~/.kube
+    - |
+      cat > ~/.kube/config <<EOF
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - cluster:
+          server: ${DO_K3S_SERVER}
+          insecure-skip-tls-verify: true
+        name: do-k3s
+      contexts:
+      - context:
+          cluster: do-k3s
+          user: do-k3s-user
+        name: do-k3s
+      current-context: do-k3s
+      users:
+      - name: do-k3s-user
+        user:
+          token: ${DO_K3S_TOKEN}
+      EOF
+    
+    - chmod 600 ~/.kube/config
+    - kubectl version --client
+    - kubectl cluster-info
+  script:
+    # Create namespace if it doesn't exist
+    - kubectl create namespace kyc-blockchain --dry-run=client -o yaml | kubectl apply -f -
+
+    # Apply ArgoCD app & DB manifests for deployment
+    - kubectl apply -f k8s/argocd/db/
+    - kubectl apply -f k8s/argocd/app/
+
+    # Trigger ArgoCD sync for DB
+    - |
+      if kubectl get application postgres -n argocd >/dev/null 2>&1; then
+        echo "Syncing postgres application..."
+        kubectl patch application postgres -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+      else
+        echo "postgres application not found, skipping sync"
+      fi
+
+    # Trigger ArgoCD sync for app
+    - |
+      if kubectl get application kyc-blockchain-app -n argocd >/dev/null 2>&1; then
+        echo "Syncing kyc-blockchain-app application..."
+        kubectl patch application kyc-blockchain-app -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+      else
+        echo " kyc-blockchain-app application not found, skipping sync"
+      fi
+    
+  when: manual
+  only:
+    - main
+    - develop
