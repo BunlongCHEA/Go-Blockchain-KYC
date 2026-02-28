@@ -4,9 +4,9 @@ variables:
   DOCKER_TLS_CERTDIR: "/certs"
   KUBE_NAMESPACE: "kyc-blockchain"
   
-  # Digital Ocean K3s Configuration
-  DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
-  DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
+  # # Digital Ocean K3s Configuration
+  # DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
+  # DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
 
 stages:
   - build
@@ -37,6 +37,21 @@ deploy:
   before_script:
     - echo "Setting up kubectl for Digital Ocean K3s..."
     
+    # Verify variables are set
+    - |
+      if [ -z "$DO_K3S_SERVER" ]; then
+        echo "ERROR: DO_K3S_SERVER is not set!"
+        exit 1
+      fi
+    - |
+      if [ -z "$DO_K3S_TOKEN" ]; then
+        echo "ERROR: DO_K3S_TOKEN is not set!"
+        exit 1
+      fi
+    
+    - echo $DO_K3S_SERVER " => K3s Server"
+    - echo ${#DO_K3S_TOKEN} " => K3s Token Length (should be > 0)"
+    
     # Create kubeconfig for K3s
     - mkdir -p ~/.kube
     - |
@@ -45,7 +60,7 @@ deploy:
       kind: Config
       clusters:
       - cluster:
-          server: ${DO_K3S_SERVER}
+          server: $DO_K3S_SERVER
           insecure-skip-tls-verify: true
         name: do-k3s
       contexts:
@@ -57,10 +72,11 @@ deploy:
       users:
       - name: do-k3s-user
         user:
-          token: ${DO_K3S_TOKEN}
+          token: $DO_K3S_TOKEN
       EOF
     
     - chmod 600 ~/.kube/config
+    - echo "Kubeconfig created, testing connection..."
     - kubectl version --client
     - kubectl cluster-info
   script:
