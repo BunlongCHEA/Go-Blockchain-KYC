@@ -52,6 +52,9 @@ deploy:
     # Debug output
     - echo "K3s Server:" $DO_K3S_SERVER
     - echo "Token length:" ${#DO_K3S_TOKEN}
+
+    # Create kubeconfig directory
+    - mkdir -p ~/.kube
     
     # Write kubeconfig with proper escaping
     - |
@@ -83,7 +86,6 @@ deploy:
     - echo "Kubeconfig created, testing connection..."
     - kubectl version --client
     - kubectl cluster-info
-    - kubectl get nodes
   script:
     - echo "Deploying to Kubernetes..."
 
