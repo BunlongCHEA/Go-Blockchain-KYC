@@ -49,18 +49,18 @@ deploy:
         exit 1
       fi
     
-    - echo $DO_K3S_SERVER " => K3s Server"
-    - echo ${#DO_K3S_TOKEN} " => K3s Token Length (should be > 0)"
+    # Debug output
+    - echo "K3s Server:" $DO_K3S_SERVER
+    - echo "Token length:" ${#DO_K3S_TOKEN}
     
-    # Create kubeconfig for K3s
-    - mkdir -p ~/.kube
+    # Write kubeconfig with proper escaping
     - |
-      cat > ~/.kube/config <<EOF
+      cat > ~/.kube/config << 'EOFCONFIG'
       apiVersion: v1
       kind: Config
       clusters:
       - cluster:
-          server: $DO_K3S_SERVER
+          server: SERVER_URL_PLACEHOLDER
           insecure-skip-tls-verify: true
         name: do-k3s
       contexts:
@@ -72,13 +72,18 @@ deploy:
       users:
       - name: do-k3s-user
         user:
-          token: $DO_K3S_TOKEN
-      EOF
+          token: TOKEN_PLACEHOLDER
+      EOFCONFIG
+    
+    # Replace placeholders
+    - sed -i "s|SERVER_URL_PLACEHOLDER|$DO_K3S_SERVER|g" ~/.kube/config
+    - sed -i "s|TOKEN_PLACEHOLDER|$DO_K3S_TOKEN|g" ~/.kube/config
     
     - chmod 600 ~/.kube/config
     - echo "Kubeconfig created, testing connection..."
     - kubectl version --client
     - kubectl cluster-info
+    - kubectl get nodes
   script:
     - echo "Deploying to Kubernetes..."
 
