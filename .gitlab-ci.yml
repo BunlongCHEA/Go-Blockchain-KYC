@@ -80,12 +80,30 @@ deploy:
     - kubectl version --client
     - kubectl cluster-info
   script:
+    - echo "Deploying to Kubernetes..."
+
     # Create namespace if it doesn't exist
     - kubectl create namespace kyc-blockchain --dry-run=client -o yaml | kubectl apply -f -
 
+    # Create GitLab registry secret
+    - |
+      kubectl create secret docker-registry gitlab-registry \
+        --docker-server=$CI_REGISTRY \
+        --docker-username=$CI_REGISTRY_USER \
+        --docker-password=$CI_REGISTRY_PASSWORD \
+        --docker-email=$GITLAB_USER_EMAIL \
+        -n kyc-blockchain \
+        --dry-run=client -o yaml | kubectl apply -f -
+
     # Apply ArgoCD app & DB manifests for deployment
+    - echo "Applying database ArgoCD application..."
     - kubectl apply -f k8s/argocd/db/
+
+    - echo "Applying application ArgoCD application..."
     - kubectl apply -f k8s/argocd/app/
+
+    # Wait for ArgoCD applications to be created
+    - sleep 5
 
     # Trigger ArgoCD sync for DB
     - |
