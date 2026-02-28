@@ -110,7 +110,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: standard-rwo  # GKE default storage class
+  storageClassName: local-path  # do-block-storage on DigitalOcean - standard-rwo on GKE - local-path on k3s default storage
   resources:
     requests:
       storage: 10Gi

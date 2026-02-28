@@ -2,7 +2,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: aspnet-ecommerce
+  name: kyc-blockchain-db
   namespace: argocd
 spec:
   project: default
