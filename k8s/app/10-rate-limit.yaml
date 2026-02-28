@@ -1,64 +1,102 @@
-# Rate limiting using Envoy Gateway
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: BackendTrafficPolicy
+# Rate limiting using Traefik Middleware
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
 metadata:
-  name: kyc-rate-limit
+  name: ratelimit
   namespace: kyc-blockchain
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: kyc-blockchain-route
   rateLimit:
-    type: Global
-    global:
-      rules:
-        # General API rate limit
-        - clientSelectors:
-            - headers:
-                - name: Authorization
-                  type: Distinct
-          limit:
-            requests: 100
-            unit: Minute
-        
-        # Stricter limit for unauthenticated requests
-        - clientSelectors:
-            - headers:
-                - name: Authorization
-                  type: Distinct
-                  invert: true
-          limit:
-            requests: 20
-            unit: Minute
+    average: 100
+    period: 1m
+    burst: 50
 
 ---
-# Security Policy
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
+# CORS Middleware
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
 metadata:
-  name: kyc-security-policy
+  name: cors-headers
   namespace: kyc-blockchain
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: kyc-gateway
-  cors:
-    allowOrigins:
-      # - "https://yourdomain.com"
-      - "https://kyc.bunlong.uk"
-    allowMethods:
+  headers:
+    accessControlAllowMethods:
       - GET
       - POST
       - PUT
       - DELETE
       - OPTIONS
-    allowHeaders:
+    accessControlAllowOriginList:
+      - https://kyc.bunlong.uk
+    accessControlAllowHeaders:
       - Authorization
       - Content-Type
       - X-Request-ID
-    exposeHeaders:
+    accessControlExposeHeaders:
       - X-Request-ID
-    maxAge: 86400s
-    allowCredentials: true
+    accessControlMaxAge: 86400
+    accessControlAllowCredentials: true
+
+# # Rate limiting using Envoy Gateway
+# apiVersion: gateway.envoyproxy.io/v1alpha1
+# kind: BackendTrafficPolicy
+# metadata:
+#   name: kyc-rate-limit
+#   namespace: kyc-blockchain
+# spec:
+#   targetRef:
+#     group: gateway.networking.k8s.io
+#     kind: HTTPRoute
+#     name: kyc-blockchain-route
+#   rateLimit:
+#     type: Global
+#     global:
+#       rules:
+#         # General API rate limit
+#         - clientSelectors:
+#             - headers:
+#                 - name: Authorization
+#                   type: Distinct
+#           limit:
+#             requests: 100
+#             unit: Minute
+        
+#         # Stricter limit for unauthenticated requests
+#         - clientSelectors:
+#             - headers:
+#                 - name: Authorization
+#                   type: Distinct
+#                   invert: true
+#           limit:
+#             requests: 20
+#             unit: Minute
+
+# ---
+# # Security Policy
+# apiVersion: gateway.envoyproxy.io/v1alpha1
+# kind: SecurityPolicy
+# metadata:
+#   name: kyc-security-policy
+#   namespace: kyc-blockchain
+# spec:
+#   targetRef:
+#     group: gateway.networking.k8s.io
+#     kind: Gateway
+#     name: kyc-gateway
+#   cors:
+#     allowOrigins:
+#       # - "https://yourdomain.com"
+#       - "https://kyc.bunlong.uk"
+#     allowMethods:
+#       - GET
+#       - POST
+#       - PUT
+#       - DELETE
+#       - OPTIONS
+#     allowHeaders:
+#       - Authorization
+#       - Content-Type
+#       - X-Request-ID
+#     exposeHeaders:
+#       - X-Request-ID
+#     maxAge: 86400s
+#     allowCredentials: true

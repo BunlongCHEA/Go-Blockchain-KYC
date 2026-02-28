@@ -17,7 +17,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: gateway-system
+              kubernetes.io/metadata.name: kube-system #gateway-system
       ports:
         - protocol: TCP
           port: 8080

@@ -41,8 +41,8 @@ spec:
               secretKeyRef:
                 name: postgres-secret
                 key: POSTGRES_DB
-          # - name: PGDATA
-            # value: /var/lib/postgresql/data/pgdata
+          - name: PGDATA
+            value: /var/lib/postgresql/data/pgdata
           volumeMounts:
           - name: postgres-storage
             mountPath: /var/lib/postgresql/data
@@ -79,10 +79,10 @@ spec:
       - name: postgres-storage
         persistentVolumeClaim:
           claimName: postgres-pvc
-      securityContext:
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+      # securityContext:
+      #   runAsUser: 999
+      #   runAsGroup: 999
+      #   fsGroup: 999
 
 ---
 # Secret for PostgreSQL credentials
@@ -126,7 +126,8 @@ metadata:
     app: postgres
     service-type: database
 spec:
-  type: ClusterIP # ClusterIP - LoadBalancer
+  type: ClusterIP  # ClusterIP - LoadBalancer
+  clusterIP: None  # Headless service for StatefulSet
   ports:
   - port: 5432
     targetPort: 5432
