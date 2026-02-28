@@ -5,10 +5,8 @@ variables:
   KUBE_NAMESPACE: "kyc-blockchain"
   
   # Digital Ocean K3s Configuration
-  # DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
-  # DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
-  DO_K3S_SERVER: "https://129.212.232.144:6443"
-  DO_K3S_TOKEN: "K10f70f11ef2e1f1236479c3d45026083f145878e33d358d536f679442d8579f686::server:806d2c45e6ffd06461a1962ded2ce404"
+  DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
+  DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
 
 stages:
   - build
