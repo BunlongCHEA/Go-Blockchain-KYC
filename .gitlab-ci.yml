@@ -37,55 +37,33 @@ deploy:
   before_script:
     - echo "Setting up kubectl for Digital Ocean K3s..."
     
-    # Verify variables are set
+    # Verify base64 kubeconfig is set
     - |
-      if [ -z "$DO_K3S_SERVER" ]; then
-        echo "ERROR: DO_K3S_SERVER is not set!"
-        exit 1
-      fi
-    - |
-      if [ -z "$DO_K3S_TOKEN" ]; then
-        echo "ERROR: DO_K3S_TOKEN is not set!"
+      if [ -z "$KUBE_CONFIG_BASE64" ]; then
+        echo "ERROR: KUBE_CONFIG_BASE64 is not set!"
+        echo "Please add it to GitLab CI/CD Variables"
         exit 1
       fi
     
-    # Debug output
-    - echo "K3s Server:" $DO_K3S_SERVER
-    - echo "Token length:" ${#DO_K3S_TOKEN}
-
-    # Create kubeconfig directory
+    # Decode base64 kubeconfig
     - mkdir -p ~/.kube
-    
-    # Write kubeconfig with proper escaping
-    - |
-      cat > ~/.kube/config << 'EOFCONFIG'
-      apiVersion: v1
-      kind: Config
-      clusters:
-      - cluster:
-          server: SERVER_URL_PLACEHOLDER
-          insecure-skip-tls-verify: true
-        name: do-k3s
-      contexts:
-      - context:
-          cluster: do-k3s
-          user: do-k3s-user
-        name: do-k3s
-      current-context: do-k3s
-      users:
-      - name: do-k3s-user
-        user:
-          token: TOKEN_PLACEHOLDER
-      EOFCONFIG
-    
-    # Replace placeholders
-    - sed -i "s|SERVER_URL_PLACEHOLDER|$DO_K3S_SERVER|g" ~/.kube/config
-    - sed -i "s|TOKEN_PLACEHOLDER|$DO_K3S_TOKEN|g" ~/.kube/config
-    
+    - echo "$KUBE_CONFIG_BASE64" | base64 -d > ~/.kube/config
     - chmod 600 ~/.kube/config
-    - echo "Kubeconfig created, testing connection..."
+    
+    # Verify kubeconfig was decoded correctly
+    - |
+      if [ ! -s ~/.kube/config ]; then
+        echo "ERROR: Kubeconfig is empty after decoding!"
+        exit 1
+      fi
+    
+    - echo "✓ Kubeconfig decoded successfully"
+    
+    # Test connection
+    - echo "Testing connection to K3s cluster..."
     - kubectl version --client
     - kubectl cluster-info
+    - kubectl get nodes
   script:
     - echo "Deploying to Kubernetes..."
 
