@@ -51,7 +51,7 @@ spec:
 
       containers:
         - name: kyc-blockchain
-          image: registry.gitlab.com/bunlongchea/kyc-blockchain:1.0.0  # Change to your registry
+          image: registry.gitlab.com/bunlongchea/go-blockchain-kyc:latest # Change to your registry
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
