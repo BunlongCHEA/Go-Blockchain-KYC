@@ -127,11 +127,11 @@ metadata:
     service-type: database
 spec:
   type: NodePort  # ClusterIP - LoadBalancer - NodePort
-  clusterIP: None  # Headless service for StatefulSet
+  # clusterIP: None  # Headless service for StatefulSet
   ports:
   - port: 5432
     targetPort: 5432
-    nodePort: 35432 # Access via <External-IP>:35432
+    nodePort: 30432 # Access via <External-IP>:30432
     protocol: TCP
     name: postgres
   selector:
