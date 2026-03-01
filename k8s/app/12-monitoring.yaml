@@ -3,8 +3,6 @@ kind: ServiceMonitor
 metadata:
   name: kyc-blockchain-monitor
   namespace: kyc-blockchain
-  labels:
-    app.kubernetes.io/name: kyc-blockchain
 spec:
   selector:
     matchLabels:
@@ -12,10 +10,6 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
-      path: /metrics
-  namespaceSelector:
-    matchNames:
-      - kyc-blockchain
 
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -23,48 +17,78 @@ kind: PrometheusRule
 metadata:
   name: kyc-blockchain-alerts
   namespace: kyc-blockchain
-  labels:
-    app.kubernetes.io/name: kyc-blockchain
 spec:
   groups:
     - name: kyc-blockchain.rules
-      rules:
-        - alert: KYCBlockchainDown
-          expr: up{job="kyc-blockchain"} == 0
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: "KYC Blockchain service is down"
-            description: "KYC Blockchain service has been down for more than 5 minutes."
+      rules: []
 
-        - alert: KYCBlockchainHighErrorRate
-          expr: |
-            sum(rate(http_requests_total{job="kyc-blockchain",status=~"5.."}[5m]))
-            / sum(rate(http_requests_total{job="kyc-blockchain"}[5m])) > 0.05
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "High error rate on KYC Blockchain"
-            description: "Error rate is above 5% for the last 5 minutes."
+# apiVersion: monitoring.coreos.com/v1
+# kind: ServiceMonitor
+# metadata:
+#   name: kyc-blockchain-monitor
+#   namespace: kyc-blockchain
+#   labels:
+#     app.kubernetes.io/name: kyc-blockchain
+# spec:
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: kyc-blockchain
+#   endpoints:
+#     - port: metrics
+#       interval: 30s
+#       path: /metrics
+#   namespaceSelector:
+#     matchNames:
+#       - kyc-blockchain
 
-        - alert: KYCBlockchainHighLatency
-          expr: |
-            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="kyc-blockchain"}[5m])) by (le))
-            > 2
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "High latency on KYC Blockchain"
-            description: "95th percentile latency is above 2 seconds."
+# ---
+# apiVersion: monitoring.coreos.com/v1
+# kind: PrometheusRule
+# metadata:
+#   name: kyc-blockchain-alerts
+#   namespace: kyc-blockchain
+#   labels:
+#     app.kubernetes.io/name: kyc-blockchain
+# spec:
+#   groups:
+#     - name: kyc-blockchain.rules
+#       rules:
+#         - alert: KYCBlockchainDown
+#           expr: up{job="kyc-blockchain"} == 0
+#           for: 5m
+#           labels:
+#             severity: critical
+#           annotations:
+#             summary: "KYC Blockchain service is down"
+#             description: "KYC Blockchain service has been down for more than 5 minutes."
 
-        - alert: PostgresDown
-          expr: pg_up{job="postgres"} == 0
-          for: 1m
-          labels:
-            severity: critical
-          annotations:
-            summary: "PostgreSQL is down"
-            description: "PostgreSQL database is unreachable."
+#         - alert: KYCBlockchainHighErrorRate
+#           expr: |
+#             sum(rate(http_requests_total{job="kyc-blockchain",status=~"5.."}[5m]))
+#             / sum(rate(http_requests_total{job="kyc-blockchain"}[5m])) > 0.05
+#           for: 5m
+#           labels:
+#             severity: warning
+#           annotations:
+#             summary: "High error rate on KYC Blockchain"
+#             description: "Error rate is above 5% for the last 5 minutes."
+
+#         - alert: KYCBlockchainHighLatency
+#           expr: |
+#             histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="kyc-blockchain"}[5m])) by (le))
+#             > 2
+#           for: 5m
+#           labels:
+#             severity: warning
+#           annotations:
+#             summary: "High latency on KYC Blockchain"
+#             description: "95th percentile latency is above 2 seconds."
+
+#         - alert: PostgresDown
+#           expr: pg_up{job="postgres"} == 0
+#           for: 1m
+#           labels:
+#             severity: critical
+#           annotations:
+#             summary: "PostgreSQL is down"
+#             description: "PostgreSQL database is unreachable."
