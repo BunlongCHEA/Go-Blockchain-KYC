@@ -16,11 +16,11 @@ metadata:
 spec:
   tls:
   - hosts:
-    - kyc-api.bunlong.uk
+    - kycapi.bunlong.uk
     # secretName: kyc-blockchain-tls
     secretName: kyc-blockchain-tls-staging
   rules:
-  - host: kyc-api.bunlong.uk
+  - host: kycapi.bunlong.uk
     http:
       paths:
       - path: /
@@ -29,7 +29,7 @@ spec:
           service:
             name: kyc-blockchain-service
             port:
-              number: 8080
+              number: 80
 
 # # Install Gateway API CRDs first:
 # # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
