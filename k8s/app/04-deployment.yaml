@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/version: "1.0.0"
 spec:
   serviceName: kyc-blockchain-headless  # Required for StatefulSet
-  replicas: 1
+  replicas: 1 # Fixed replicas for Raft consensus (odd number)
   strategy:
     type: RollingUpdate
     rollingUpdate:
