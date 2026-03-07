@@ -12,6 +12,15 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 
 	// ==================== Public Routes ====================
 
+	// Root endpoint
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		SendSuccess(w, "", map[string]interface{}{
+			"message": "KYC Blockchain API",
+			"version": "1.0.0",
+			"status":  "running",
+		})
+	})
+
 	// Health check
 	mux.HandleFunc("GET /health", handlers.HealthCheck)
 
