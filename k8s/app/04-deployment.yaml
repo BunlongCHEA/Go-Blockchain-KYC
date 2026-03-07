@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet # Deployment
 metadata:
   name: kyc-blockchain
   namespace: kyc-blockchain
@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: kyc-blockchain
     app.kubernetes.io/version: "1.0.0"
 spec:
+  serviceName: kyc-blockchain-headless  # Required for StatefulSet
   replicas: 1
   strategy:
     type: RollingUpdate

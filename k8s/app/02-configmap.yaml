@@ -42,7 +42,7 @@ data:
       },
       "consensus": {
         "type": "raft",
-        "namespace": "",
+        "namespace": "kyc-blockchain",
         "node_id": "",
         "discovery_method": "kubernetes",
         "headless_service": "kyc-blockchain-headless",
