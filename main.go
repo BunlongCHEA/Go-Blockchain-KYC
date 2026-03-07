@@ -166,15 +166,22 @@ func initializeCrypto(cfg *config.Config) (*crypto.KeyManager, *crypto.Encryptor
 
 	// Use fixed key from config instead of generating new one
 	var encryptionKey []byte
-	if cfg.Crypto.EncryptionKey != "" {
-		// Use key from config (must be 32 bytes for AES-256)
+
+	// Priority 1: Environment variable (from Kubernetes Secret)
+	envKey := os.Getenv("ENCRYPTION_KEY")
+
+	if envKey != "" {
+		encryptionKey = []byte(envKey)
+		log.Println("   ✓ Using encryption key from environment variable")
+	} else if cfg.Crypto.EncryptionKey != "" {
+		// Priority 2: Config file (must be 32 bytes for AES-256)
 		encryptionKey = []byte(cfg.Crypto.EncryptionKey)
 		if len(encryptionKey) != 32 {
 			return nil, nil, fmt.Errorf("encryption_key must be exactly 32 bytes, got %d", len(encryptionKey))
 		}
 		log.Println("   ✓ Using encryption key from config")
 	} else {
-		// Generate new key (only for first run, will break on restart!)
+		// Priority 3: Generate new key (only for first run, will break on restart!)
 		encryptionKey, err = crypto.GenerateKey()
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate encryption key: %w", err)

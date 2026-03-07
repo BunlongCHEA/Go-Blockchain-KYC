@@ -38,7 +38,8 @@ data:
       "crypto": {
         "key_store_path": "/app/keys",
         "algorithm": "RSA",
-        "key_size": 2048
+        "key_size": 2048,
+        "encryption_key": ""
       },
       "consensus": {
         "type": "raft",
