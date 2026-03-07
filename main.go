@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -201,27 +202,69 @@ func initializeCrypto(cfg *config.Config) (*crypto.KeyManager, *crypto.Encryptor
 
 // initializeStorage initializes database storage
 func initializeStorage(cfg *config.Config) (storage.Storage, error) {
+	// Apply environment variable overrides for database credentials
+	// This allows Kubernetes secrets to override config file values
+	dbHost := cfg.Database.Host
+	dbPort := cfg.Database.Port
+	dbUser := cfg.Database.User
+	dbPassword := cfg.Database.Password
+	dbName := cfg.Database.DBName
+	dbSSLMode := cfg.Database.SSLMode
+
+	// Override with POSTGRES_* env vars (from postgres-secret)
+	if envUser := os.Getenv("POSTGRES_USER"); envUser != "" {
+		dbUser = envUser
+		log.Println("   ✓ Using POSTGRES_USER from environment")
+	}
+	if envPassword := os.Getenv("POSTGRES_PASSWORD"); envPassword != "" {
+		dbPassword = envPassword
+		log.Println("   ✓ Using POSTGRES_PASSWORD from environment")
+	}
+	if envDB := os.Getenv("POSTGRES_DB"); envDB != "" {
+		dbName = envDB
+		log.Println("   ✓ Using POSTGRES_DB from environment")
+	}
+
+	// Override with DB_* env vars (additional overrides)
+	if envHost := os.Getenv("DB_HOST"); envHost != "" {
+		dbHost = envHost
+		log.Println("   ✓ Using DB_HOST from environment")
+	}
+	if envPort := os.Getenv("DB_PORT"); envPort != "" {
+		if port, err := strconv.Atoi(envPort); err == nil {
+			dbPort = port
+			log.Println("   ✓ Using DB_PORT from environment")
+		}
+	}
+	if envSSLMode := os.Getenv("DB_SSLMODE"); envSSLMode != "" {
+		dbSSLMode = envSSLMode
+		log.Println("   ✓ Using DB_SSLMODE from environment")
+	}
+
+	log.Printf("   → Connecting to database: %s@%s:%d/%s (sslmode=%s)\n",
+		dbUser, dbHost, dbPort, dbName, dbSSLMode)
+
 	// Ensure database exists before connecting
 	err := storage.EnsureDatabase(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
+		dbHost,
+		dbPort,
+		dbUser,
+		dbPassword,
+		dbName,
+		dbSSLMode,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to ensure database:  %w", err)
+		return nil, fmt.Errorf("failed to ensure database: %w", err)
 	}
 
 	// Now connect to the database
 	store, err := storage.NewPostgresStorage(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
+		dbHost,
+		dbPort,
+		dbUser,
+		dbPassword,
+		dbName,
+		dbSSLMode,
 	)
 	if err != nil {
 		return nil, err
@@ -233,6 +276,7 @@ func initializeStorage(cfg *config.Config) (storage.Storage, error) {
 		return nil, fmt.Errorf("migration failed: %w", err)
 	}
 
+	log.Println("   ✓ Database connected and migrated successfully")
 	return store, nil
 }
 

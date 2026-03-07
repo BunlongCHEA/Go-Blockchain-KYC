@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -135,35 +134,6 @@ func DefaultConfig() *Config {
 			MaxTxPerBlock: 100,
 			BlockInterval: 10,
 		},
-	}
-}
-
-// Add function to override with env vars
-func (c *Config) ApplyEnvOverrides() {
-	if host := os.Getenv("DB_HOST"); host != "" {
-		c.Database.Host = host
-	}
-	if port := os.Getenv("DB_PORT"); port != "" {
-		if p, err := strconv.Atoi(port); err == nil {
-			c.Database.Port = p
-		}
-	}
-	if user := os.Getenv("DB_USER"); user != "" {
-		c.Database.User = user
-	}
-	if password := os.Getenv("DB_PASSWORD"); password != "" {
-		c.Database.Password = password
-	}
-	if dbname := os.Getenv("DB_NAME"); dbname != "" {
-		c.Database.DBName = dbname
-	}
-	if sslmode := os.Getenv("DB_SSLMODE"); sslmode != "" {
-		c.Database.SSLMode = sslmode
-	}
-
-	// Crypto overrides
-	if encKey := os.Getenv("ENCRYPTION_KEY"); encKey != "" {
-		c.Crypto.EncryptionKey = encKey
 	}
 }
 
