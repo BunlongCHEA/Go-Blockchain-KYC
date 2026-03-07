@@ -16,11 +16,12 @@ data:
         "idle_timeout": 120
       },
       "database": {
-        "host": "165.245.185.178",
-        "port": 30432,
+        "host": "postgres-service",
+        "port": 5432,
         "user": "postgres",
+        "password": "strongpassword123",
         "dbname": "kyc_blockchain",
-        "sslmode": "require",
+        "sslmode": "disable",
         "max_open_conns": 25,
         "max_idle_conns": 5,
         "conn_max_lifetime": 300
