@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
-	"time"
 
 	"Go-Blockchain-KYC/api"
 	"Go-Blockchain-KYC/auth"
@@ -47,8 +46,8 @@ func main() {
 	log.Println("\n2. Initializing Authentication Service...")
 	authService := auth.NewAuthService(
 		cfg.JWT.SecretKey,
-		cfg.JWT.TokenExpiry,
-		cfg.JWT.RefreshExpiry,
+		cfg.JWT.GetTokenExpiry(),
+		cfg.JWT.GetRefreshExpiry(),
 	)
 	log.Println("   ✓ JWT Service initialized")
 	log.Println("   ✓ RBAC initialized")
@@ -358,7 +357,7 @@ func initializeConsensus(cfg *config.Config) consensus.Consensus {
 			Type:    consensus.ConsensusType(cfg.Consensus.Type),
 			NodeID:  nodeID,
 			Nodes:   nodes,
-			Timeout: int64(cfg.Consensus.ElectionTimeout / time.Millisecond),
+			Timeout: int64(cfg.Consensus.GetElectionTimeout()),
 		}
 
 		// Create consensus engine
@@ -387,7 +386,7 @@ func initializeConsensus(cfg *config.Config) consensus.Consensus {
 		Type:    consensus.ConsensusType(cfg.Consensus.Type),
 		NodeID:  cfg.Consensus.NodeID,
 		Nodes:   nodes,
-		Timeout: int64(cfg.Consensus.ElectionTimeout / time.Millisecond),
+		Timeout: int64(cfg.Consensus.GetElectionTimeout()),
 	}
 
 	return consensus.NewConsensus(consensusConfig)

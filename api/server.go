@@ -71,9 +71,9 @@ func (s *Server) Start() error {
 	s.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      router,
-		ReadTimeout:  s.config.Server.ReadTimeout,
-		WriteTimeout: s.config.Server.WriteTimeout,
-		IdleTimeout:  s.config.Server.IdleTimeout,
+		ReadTimeout:  s.config.Server.GetReadTimeout(),
+		WriteTimeout: s.config.Server.GetWriteTimeout(),
+		IdleTimeout:  s.config.Server.GetIdleTimeout(),
 	}
 
 	// Configure TLS if certificates are provided

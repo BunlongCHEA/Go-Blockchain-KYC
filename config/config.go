@@ -19,13 +19,50 @@ type Config struct {
 
 // ServerConfig holds HTTP server configuration
 type ServerConfig struct {
-	Host         string        `json:"host"`
-	Port         int           `json:"port"`
-	ReadTimeout  time.Duration `json:"read_timeout"`
-	WriteTimeout time.Duration `json:"write_timeout"`
-	IdleTimeout  time.Duration `json:"idle_timeout"`
-	TLSCertFile  string        `json:"tls_cert_file"`
-	TLSKeyFile   string        `json:"tls_key_file"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	ReadTimeout  int    `json:"read_timeout"`  // seconds
+	WriteTimeout int    `json:"write_timeout"` // seconds
+	IdleTimeout  int    `json:"idle_timeout"`  // seconds
+	TLSCertFile  string `json:"tls_cert_file"`
+	TLSKeyFile   string `json:"tls_key_file"`
+}
+
+// Helper methods to get durations
+func (s *ServerConfig) GetReadTimeout() time.Duration {
+	if s.ReadTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(s.ReadTimeout) * time.Second
+}
+
+func (s *ServerConfig) GetWriteTimeout() time.Duration {
+	if s.WriteTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(s.WriteTimeout) * time.Second
+}
+
+func (s *ServerConfig) GetIdleTimeout() time.Duration {
+	if s.IdleTimeout <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(s.IdleTimeout) * time.Second
+}
+
+// Add these helper methods (already in the config.go above)
+func (c *ConsensusConfig) GetElectionTimeout() time.Duration {
+	if c.ElectionTimeout <= 0 {
+		return 1000 * time.Millisecond
+	}
+	return time.Duration(c.ElectionTimeout) * time.Millisecond
+}
+
+func (c *ConsensusConfig) GetHeartbeatInterval() time.Duration {
+	if c.HeartbeatInterval <= 0 {
+		return 150 * time.Millisecond
+	}
+	return time.Duration(c.HeartbeatInterval) * time.Millisecond
 }
 
 // DatabaseConfig holds database configuration
@@ -35,8 +72,8 @@ type DatabaseConfig struct {
 	Port            int    `json:"port"`
 	User            string `json:"user"`
 	Password        string `json:"password"`
-	DBName          string `json:"db_name"`
-	SSLMode         string `json:"ssl_mode"`
+	DBName          string `json:"dbname"`  // Changed to match ConfigMap
+	SSLMode         string `json:"sslmode"` // Changed to match ConfigMap
 	MaxOpenConns    int    `json:"max_open_conns"`
 	MaxIdleConns    int    `json:"max_idle_conns"`
 	ConnMaxLifetime int    `json:"conn_max_lifetime"`
@@ -44,16 +81,30 @@ type DatabaseConfig struct {
 
 // JWTConfig holds JWT configuration
 type JWTConfig struct {
-	SecretKey     string        `json:"secret_key"`
-	TokenExpiry   time.Duration `json:"token_expiry"`
-	RefreshExpiry time.Duration `json:"refresh_expiry"`
-	Issuer        string        `json:"issuer"`
+	SecretKey     string `json:"secret_key"`
+	TokenExpiry   int    `json:"token_expiry"`   // seconds
+	RefreshExpiry int    `json:"refresh_expiry"` // seconds
+	Issuer        string `json:"issuer"`
+}
+
+func (j *JWTConfig) GetTokenExpiry() time.Duration {
+	if j.TokenExpiry <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(j.TokenExpiry) * time.Second
+}
+
+func (j *JWTConfig) GetRefreshExpiry() time.Duration {
+	if j.RefreshExpiry <= 0 {
+		return 7 * 24 * time.Hour
+	}
+	return time.Duration(j.RefreshExpiry) * time.Second
 }
 
 // CryptoConfig holds cryptographic configuration
 type CryptoConfig struct {
-	Algorithm     string `json:"algorithm"` // RSA or ECDSA
-	KeySize       int    `json:"key_size"`  // 2048 for RSA, 256 for ECDSA
+	Algorithm     string `json:"algorithm"`
+	KeySize       int    `json:"key_size"`
 	AESKeySize    int    `json:"aes_key_size"`
 	KeyStorePath  string `json:"key_store_path"`
 	EncryptionKey string `json:"encryption_key"`
@@ -61,14 +112,14 @@ type CryptoConfig struct {
 
 // ConsensusConfig holds consensus configuration
 type ConsensusConfig struct {
-	Type              string        `json:"type"`      // pbft or raft
-	Namespace         string        `json:"namespace"` // Kubernetes namespace for service discovery
-	NodeID            string        `json:"node_id"`
-	Nodes             []string      `json:"nodes"`            // For static mode
-	DiscoveryMethod   string        `json:"discovery_method"` // "kubernetes" or "static"
-	HeadlessService   string        `json:"headless_service"`
-	ElectionTimeout   time.Duration `json:"election_timeout"`
-	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
+	Type              string   `json:"type"`
+	Namespace         string   `json:"namespace"`
+	NodeID            string   `json:"node_id"`
+	Nodes             []string `json:"nodes"`
+	DiscoveryMethod   string   `json:"discovery_method"`
+	HeadlessService   string   `json:"headless_service"`
+	ElectionTimeout   int      `json:"election_timeout"`   // milliseconds
+	HeartbeatInterval int      `json:"heartbeat_interval"` // milliseconds
 }
 
 // BlockchainConfig holds blockchain configuration
@@ -82,7 +133,7 @@ type VerificationConfig struct {
 	Enabled       bool    `json:"enabled"`
 	AutoApprove   bool    `json:"auto_approve"`
 	MinScore      float64 `json:"min_score"`
-	Provider      string  `json:"provider"` // "didit", "onfido", "trulioo"
+	Provider      string  `json:"provider"`
 	DiditClientID string  `json:"didit_client_id"`
 	DiditSecret   string  `json:"didit_client_secret"`
 	OnfidoAPIKey  string  `json:"onfido_api_key"`
@@ -95,8 +146,9 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Host:         "0.0.0.0",
 			Port:         8080,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
+			ReadTimeout:  30,
+			WriteTimeout: 30,
+			IdleTimeout:  120,
 		},
 		Database: DatabaseConfig{
 			Driver:          "postgres",
@@ -112,8 +164,8 @@ func DefaultConfig() *Config {
 		},
 		JWT: JWTConfig{
 			SecretKey:     "your-super-secret-key-change-in-production",
-			TokenExpiry:   24 * time.Hour,
-			RefreshExpiry: 7 * 24 * time.Hour,
+			TokenExpiry:   3600,
+			RefreshExpiry: 86400,
 			Issuer:        "kyc-blockchain",
 		},
 		Crypto: CryptoConfig{
@@ -126,8 +178,8 @@ func DefaultConfig() *Config {
 			Type:              "pbft",
 			NodeID:            "node1",
 			Nodes:             []string{"node1", "node2", "node3", "node4"},
-			ElectionTimeout:   150 * time.Millisecond,
-			HeartbeatInterval: 50 * time.Millisecond,
+			ElectionTimeout:   1000,
+			HeartbeatInterval: 150,
 		},
 		Blockchain: BlockchainConfig{
 			Difficulty:    2,
@@ -144,7 +196,7 @@ func LoadConfig(path string) (*Config, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return config, nil // Use defaults if file doesn't exist
+			return config, nil
 		}
 		return nil, err
 	}
@@ -155,38 +207,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// Override node_id with POD_NAME if available (Kubernetes)
 	if podName := os.Getenv("POD_NAME"); podName != "" {
 		config.Consensus.NodeID = podName
 	}
-
-	// Override nodes list with headless service discovery
 	if podNamespace := os.Getenv("POD_NAMESPACE"); podNamespace != "" {
 		config.Consensus.Namespace = podNamespace
 	}
 
 	return config, nil
-}
-
-// SaveConfig saves configuration to file
-func SaveConfig(config *Config, path string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(config)
-}
-
-// GetDSN returns database connection string
-func (d *DatabaseConfig) GetDSN() string {
-	return "host=" + d.Host +
-		" port=" + string(rune(d.Port)) +
-		" user=" + d.User +
-		" password=" + d.Password +
-		" dbname=" + d.DBName +
-		" sslmode=" + d.SSLMode
 }
