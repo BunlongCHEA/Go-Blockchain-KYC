@@ -17,7 +17,7 @@ data:
       },
       "database": {
         "host": "postgres-service",
-        "port": 5432,
+        "port": 30432,
         "user": "postgres",
         "dbname": "kyc_blockchain",
         "sslmode": "require",

@@ -30,11 +30,16 @@ metadata:
     app.kubernetes.io/name: kyc-blockchain
 spec:
   type: ClusterIP
-  clusterIP: None
+  clusterIP: None  # This makes it headless
+  publishNotReadyAddresses: true  # Important for consensus
   ports:
     - port: 8080
       targetPort: 8080
       protocol: TCP
       name: http
+    - port: 7946  # Add consensus port if needed
+      targetPort: 7946
+      protocol: TCP
+      name: consensus
   selector:
     app.kubernetes.io/name: kyc-blockchain
