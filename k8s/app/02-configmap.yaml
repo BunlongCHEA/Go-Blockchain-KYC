@@ -16,7 +16,7 @@ data:
         "idle_timeout": 120
       },
       "database": {
-        "host": "postgres-service",
+        "host": "165.245.185.178",
         "port": 30432,
         "user": "postgres",
         "dbname": "kyc_blockchain",
