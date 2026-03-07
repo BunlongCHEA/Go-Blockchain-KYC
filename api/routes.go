@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"Go-Blockchain-KYC/auth"
@@ -10,16 +11,42 @@ import (
 func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux := http.NewServeMux()
 
-	// ==================== Public Routes ====================
+	// Debug endpoint - shows all registered routes
+	mux.HandleFunc("/debug/routes", func(w http.ResponseWriter, r *http.Request) {
+		routes := []string{
+			"GET /",
+			"GET /health",
+			"POST /api/v1/auth/register",
+			"POST /api/v1/auth/login",
+			"POST /api/v1/auth/refresh",
+			"GET /api/v1/auth/profile",
+			"POST /api/v1/kyc",
+			"GET /api/v1/kyc",
+			"PUT /api/v1/kyc",
+			"DELETE /api/v1/kyc",
+			"GET /api/v1/kyc/list",
+			"POST /api/v1/kyc/verify",
+			"POST /api/v1/kyc/reject",
+			"POST /api/v1/kyc/auto-verify",
+			"GET /api/v1/banks",
+			"GET /api/v1/banks/list",
+			"POST /api/v1/banks",
+			"GET /api/v1/blockchain/stats",
+			"POST /api/v1/blockchain/mine",
+		}
 
-	// Root endpoint
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "Registered Routes:\n\n")
+		for _, route := range routes {
+			fmt.Fprintf(w, "%s\n", route)
+		}
+	})
+
+	// Root endpoint - MUST handle trailing slash
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Only match exact "/"
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		SendSuccess(w, "", map[string]interface{}{
@@ -30,196 +57,193 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	})
 
 	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handlers.HealthCheck(w, r)
-	})
+	mux.HandleFunc("/health", handlers.HealthCheck)
 
 	// Auth routes
-	mux.HandleFunc("/api/v1/auth/register", methodHandler(http.MethodPost, handlers.Register))
-	mux.HandleFunc("/api/v1/auth/login", methodHandler(http.MethodPost, handlers.Login))
-	mux.HandleFunc("/api/v1/auth/refresh", methodHandler(http.MethodPost, handlers.RefreshToken))
+	mux.HandleFunc("/api/v1/auth/register", handlers.Register)
+	mux.HandleFunc("/api/v1/auth/login", handlers.Login)
+	mux.HandleFunc("/api/v1/auth/refresh", handlers.RefreshToken)
 
-	// Profile
-	mux.Handle("/api/v1/auth/profile", methodHandler(http.MethodGet,
-		middleware.Authenticate(http.HandlerFunc(handlers.GetProfile)).ServeHTTP))
+	// Profile (protected)
+	mux.Handle("/api/v1/auth/profile",
+		middleware.Authenticate(http.HandlerFunc(handlers.GetProfile)))
 
 	// Certificate verification (public)
-	mux.HandleFunc("/api/v1/certificate/verify", methodHandler(http.MethodPost, handlers.VerifyCertificate))
+	mux.HandleFunc("/api/v1/certificate/verify", handlers.VerifyCertificate)
 
-	// ==================== Protected Routes ====================
+	// ==================== KYC Routes ====================
 
-	// KYC Routes
-	mux.Handle("/api/v1/kyc", routeByMethod(map[string]http.Handler{
-		http.MethodPost: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCCreate)(
-				http.HandlerFunc(handlers.CreateKYC))),
-		http.MethodGet: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYC))),
-		http.MethodPut: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCUpdate)(
-				http.HandlerFunc(handlers.UpdateKYC))),
-		http.MethodDelete: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCDelete)(
-				http.HandlerFunc(handlers.DeleteKYC))),
-	}))
+	// KYC CRUD
+	mux.HandleFunc("/api/v1/kyc", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermKYCCreate)(
+					http.HandlerFunc(handlers.CreateKYC))).ServeHTTP(w, r)
+		case http.MethodGet:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermKYCRead)(
+					http.HandlerFunc(handlers.GetKYC))).ServeHTTP(w, r)
+		case http.MethodPut:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermKYCUpdate)(
+					http.HandlerFunc(handlers.UpdateKYC))).ServeHTTP(w, r)
+		case http.MethodDelete:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermKYCDelete)(
+					http.HandlerFunc(handlers.DeleteKYC))).ServeHTTP(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
-	mux.Handle("/api/v1/kyc/list", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/kyc/list",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.ListKYC))).ServeHTTP))
+				http.HandlerFunc(handlers.ListKYC))))
 
-	mux.Handle("/api/v1/kyc/history", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/kyc/history",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYCHistory))).ServeHTTP))
+				http.HandlerFunc(handlers.GetKYCHistory))))
 
-	mux.Handle("/api/v1/kyc/verify", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/kyc/verify",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCVerify)(
-				http.HandlerFunc(handlers.VerifyKYC))).ServeHTTP))
+				http.HandlerFunc(handlers.VerifyKYC))))
 
-	mux.Handle("/api/v1/kyc/reject", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/kyc/reject",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCReject)(
-				http.HandlerFunc(handlers.RejectKYC))).ServeHTTP))
+				http.HandlerFunc(handlers.RejectKYC))))
 
-	mux.Handle("/api/v1/kyc/auto-verify", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/kyc/auto-verify",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCVerify)(
-				http.HandlerFunc(handlers.AutoVerifyKYC))).ServeHTTP))
+				http.HandlerFunc(handlers.AutoVerifyKYC))))
 
-	mux.Handle("/api/v1/kyc/review", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/kyc/review",
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleBankOfficer)(
-				http.HandlerFunc(handlers.PeriodicReviewKYC))).ServeHTTP))
+				http.HandlerFunc(handlers.PeriodicReviewKYC))))
 
-	mux.Handle("/api/v1/kyc/review/status", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/kyc/review/status",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYCReviewStatus))).ServeHTTP))
+				http.HandlerFunc(handlers.GetKYCReviewStatus))))
 
-	// Bank Routes
-	mux.Handle("/api/v1/banks", routeByMethod(map[string]http.Handler{
-		http.MethodPost: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermBankCreate)(
-				http.HandlerFunc(handlers.RegisterBank))),
-		http.MethodGet: middleware.Authenticate(
-			middleware.RequirePermission(auth.PermBankRead)(
-				http.HandlerFunc(handlers.GetBank))),
-	}))
+	// ==================== Bank Routes ====================
 
-	mux.Handle("/api/v1/banks/list", methodHandler(http.MethodGet,
+	mux.HandleFunc("/api/v1/banks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermBankCreate)(
+					http.HandlerFunc(handlers.RegisterBank))).ServeHTTP(w, r)
+		case http.MethodGet:
+			middleware.Authenticate(
+				middleware.RequirePermission(auth.PermBankRead)(
+					http.HandlerFunc(handlers.GetBank))).ServeHTTP(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.Handle("/api/v1/banks/list",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBankRead)(
-				http.HandlerFunc(handlers.ListBanks))).ServeHTTP))
+				http.HandlerFunc(handlers.ListBanks))))
 
-	// Blockchain Routes
-	mux.Handle("/api/v1/blockchain/stats", methodHandler(http.MethodGet,
+	// ==================== Blockchain Routes ====================
+
+	mux.Handle("/api/v1/blockchain/stats",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
-				http.HandlerFunc(handlers.GetBlockchainStats))).ServeHTTP))
+				http.HandlerFunc(handlers.GetBlockchainStats))))
 
-	mux.Handle("/api/v1/blockchain/blocks", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/blockchain/blocks",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
-				http.HandlerFunc(handlers.GetBlocks))).ServeHTTP))
+				http.HandlerFunc(handlers.GetBlocks))))
 
-	mux.Handle("/api/v1/blockchain/block", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/blockchain/block",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
-				http.HandlerFunc(handlers.GetBlock))).ServeHTTP))
+				http.HandlerFunc(handlers.GetBlock))))
 
-	mux.Handle("/api/v1/blockchain/mine", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/blockchain/mine",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainMine)(
-				http.HandlerFunc(handlers.MineBlock))).ServeHTTP))
+				http.HandlerFunc(handlers.MineBlock))))
 
-	mux.Handle("/api/v1/blockchain/pending", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/blockchain/pending",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
-				http.HandlerFunc(handlers.GetPendingTransactions))).ServeHTTP))
+				http.HandlerFunc(handlers.GetPendingTransactions))))
 
-	mux.Handle("/api/v1/blockchain/validate", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/blockchain/validate",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermBlockchainRead)(
-				http.HandlerFunc(handlers.ValidateChain))).ServeHTTP))
+				http.HandlerFunc(handlers.ValidateChain))))
 
-	// Monitoring Routes
-	mux.Handle("/api/v1/audit/logs", methodHandler(http.MethodGet,
+	// ==================== Monitoring Routes ====================
+
+	mux.Handle("/api/v1/audit/logs",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermAuditRead)(
-				http.HandlerFunc(handlers.GetAuditLogs))).ServeHTTP))
+				http.HandlerFunc(handlers.GetAuditLogs))))
 
-	mux.Handle("/api/v1/security/alerts", routeByMethod(map[string]http.Handler{
-		http.MethodGet: middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
-				http.HandlerFunc(handlers.GetSecurityAlerts))),
-		http.MethodPost: middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
-				http.HandlerFunc(handlers.ReviewSecurityAlert))),
-	}))
-
-	// Key Management Routes
-	mux.Handle("/api/v1/keys/generate", methodHandler(http.MethodPost,
-		middleware.Authenticate(http.HandlerFunc(handlers.GenerateRequesterKeyPair)).ServeHTTP))
-
-	mux.Handle("/api/v1/keys", methodHandler(http.MethodGet,
+	mux.Handle("/api/v1/security/alerts",
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin)(
-				http.HandlerFunc(handlers.GetRequesterKeys))).ServeHTTP))
+				http.HandlerFunc(handlers.GetSecurityAlerts))))
 
-	mux.Handle("/api/v1/keys/info", methodHandler(http.MethodGet,
-		middleware.Authenticate(http.HandlerFunc(handlers.GetRequesterKeyByID)).ServeHTTP))
-
-	mux.Handle("/api/v1/keys/revoke", methodHandler(http.MethodPost,
+	mux.Handle("/api/v1/security/alerts/review",
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin)(
-				http.HandlerFunc(handlers.RevokeRequesterKey))).ServeHTTP))
+				http.HandlerFunc(handlers.ReviewSecurityAlert))))
 
-	// Certificate Routes
-	mux.Handle("/api/v1/certificate/issue", methodHandler(http.MethodPost,
+	// ==================== Key Management Routes ====================
+
+	mux.Handle("/api/v1/keys/generate",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GenerateRequesterKeyPair)))
+
+	mux.Handle("/api/v1/keys",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.GetRequesterKeys))))
+
+	mux.Handle("/api/v1/keys/info",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetRequesterKeyByID)))
+
+	mux.Handle("/api/v1/keys/revoke",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RevokeRequesterKey))))
+
+	// ==================== Certificate Routes ====================
+
+	mux.Handle("/api/v1/certificate/issue",
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
-				http.HandlerFunc(handlers.IssueVerificationCertificate))).ServeHTTP))
+				http.HandlerFunc(handlers.IssueVerificationCertificate))))
 
-	// Renewal Alerts
-	mux.Handle("/api/v1/alerts/renewal", routeByMethod(map[string]http.Handler{
-		http.MethodGet:  middleware.Authenticate(http.HandlerFunc(handlers.GetRenewalAlerts)),
-		http.MethodPost: middleware.Authenticate(http.HandlerFunc(handlers.ConfigureRenewalAlert)),
-	}))
+	// ==================== Renewal Alerts ====================
+
+	mux.Handle("/api/v1/alerts/renewal",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetRenewalAlerts)))
+
+	mux.Handle("/api/v1/alerts/renewal/configure",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
 
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
 
 	return handler
-}
-
-// methodHandler wraps a handler to only accept a specific HTTP method
-func methodHandler(method string, handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != method {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handler(w, r)
-	}
-}
-
-// routeByMethod routes requests to different handlers based on HTTP method
-func routeByMethod(methods map[string]http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler, ok := methods[r.Method]
-		if !ok {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
 }
 
 // // SetupRoutes configures all API routes
