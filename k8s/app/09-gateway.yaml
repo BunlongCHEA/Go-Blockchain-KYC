@@ -8,15 +8,17 @@ metadata:
     app.kubernetes.io/name: kyc-blockchain
   annotations:
     kubernetes.io/ingress.class: "traefik"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: kyc-blockchain-ratelimit@kubernetescrd
+    # traefik.ingress.kubernetes.io/router.middlewares: kyc-blockchain-ratelimit@kubernetescrd
 spec:
   tls:
   - hosts:
     - kyc-api.bunlong.uk
-    secretName: kyc-blockchain-tls
+    # secretName: kyc-blockchain-tls
+    secretName: kyc-blockchain-tls-staging
   rules:
   - host: kyc-api.bunlong.uk
     http:
