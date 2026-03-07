@@ -9,11 +9,15 @@ metadata:
 spec:
   serviceName: kyc-blockchain-headless  # Required for StatefulSet
   replicas: 1 # Fixed replicas for Raft consensus (odd number)
-  strategy:
+  # strategy:
+  #   type: RollingUpdate
+  #   rollingUpdate:
+  #     maxSurge: 1
+  #     maxUnavailable: 0
+  updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      partition: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: kyc-blockchain
@@ -138,16 +142,16 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: http
+              port: 8080
             initialDelaySeconds: 30
             periodSeconds: 15
-            timeoutSeconds: 5
+            timeoutSeconds: 10
             failureThreshold: 3
           
           readinessProbe:
             httpGet:
               path: /health
-              port: http
+              port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
@@ -156,7 +160,7 @@ spec:
           startupProbe:
             httpGet:
               path: /health
-              port: http
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -175,23 +179,23 @@ spec:
             medium: Memory
             sizeLimit: 50Mi
 
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: kyc-blockchain
-                topologyKey: kubernetes.io/hostname
+      # affinity:
+      #   podAntiAffinity:
+      #     preferredDuringSchedulingIgnoredDuringExecution:
+      #       - weight: 100
+      #         podAffinityTerm:
+      #           labelSelector:
+      #             matchLabels:
+      #               app.kubernetes.io/name: kyc-blockchain
+      #           topologyKey: kubernetes.io/hostname
 
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kyc-blockchain
+      # topologySpreadConstraints:
+      #   - maxSkew: 1
+      #     topologyKey: topology.kubernetes.io/zone
+      #     whenUnsatisfiable: ScheduleAnyway
+      #     labelSelector:
+      #       matchLabels:
+      #         app.kubernetes.io/name: kyc-blockchain
 
 ---
 apiVersion: v1
