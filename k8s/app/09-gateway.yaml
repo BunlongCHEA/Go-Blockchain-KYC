@@ -27,7 +27,7 @@ spec:
           service:
             name: kyc-blockchain-service
             port:
-              number: 80
+              number: 8080
 
 # # Install Gateway API CRDs first:
 # # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
