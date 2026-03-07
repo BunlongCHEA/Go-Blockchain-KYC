@@ -34,21 +34,21 @@ spec:
         fsGroup: 1000
       
       # Wait for postgres to be ready
-      initContainers:
-        - name: wait-for-postgres
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z postgres-service 5432; do
-                echo "Waiting for PostgreSQL..."
-                sleep 2
-              done
-              echo "PostgreSQL is ready!"
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
+      # initContainers:
+      #   - name: wait-for-postgres
+      #     image: busybox:1.36
+      #     command:
+      #       - sh
+      #       - -c
+      #       - |
+      #         until nc -z postgres-service 5432; do
+      #           echo "Waiting for PostgreSQL..."
+      #           sleep 2
+      #         done
+      #         echo "PostgreSQL is ready!"
+      #     securityContext:
+      #       allowPrivilegeEscalation: false
+      #       readOnlyRootFilesystem: true
 
       containers:
         - name: kyc-blockchain
