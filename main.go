@@ -212,17 +212,17 @@ func initializeStorage(cfg *config.Config) (storage.Storage, error) {
 	dbSSLMode := cfg.Database.SSLMode
 
 	// Override with POSTGRES_* env vars (from postgres-secret)
-	if envUser := os.Getenv("POSTGRES_USER"); envUser != "" {
+	if envUser := os.Getenv("DB_USER"); envUser != "" {
 		dbUser = envUser
-		log.Println("   ✓ Using POSTGRES_USER from environment")
+		log.Println("   ✓ Using DB_USER from environment")
 	}
-	if envPassword := os.Getenv("POSTGRES_PASSWORD"); envPassword != "" {
+	if envPassword := os.Getenv("DB_PASSWORD"); envPassword != "" {
 		dbPassword = envPassword
-		log.Println("   ✓ Using POSTGRES_PASSWORD from environment")
+		log.Println("   ✓ Using DB_PASSWORD from environment")
 	}
-	if envDB := os.Getenv("POSTGRES_DB"); envDB != "" {
+	if envDB := os.Getenv("DB_NAME"); envDB != "" {
 		dbName = envDB
-		log.Println("   ✓ Using POSTGRES_DB from environment")
+		log.Println("   ✓ Using DB_NAME from environment")
 	}
 
 	// Override with DB_* env vars (additional overrides)
