@@ -58,36 +58,36 @@ spec:
         - protocol: TCP
           port: 443
 
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: postgres-network-policy
-  namespace: kyc-blockchain
-  labels:
-    app.kubernetes.io/name: postgres
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: postgres
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    # Only allow from kyc-blockchain pods
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: kyc-blockchain
-      ports:
-        - protocol: TCP
-          port: 5432
-  egress:
-    # Allow all outbound traffic for PostgreSQL operations
-    - {}
-    # # Allow DNS only
-    # - to:
-    #     - namespaceSelector: {}
-    #   ports:
-    #     - protocol: UDP
-    #       port: 53
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: postgres-network-policy
+#   namespace: kyc-blockchain
+#   labels:
+#     app.kubernetes.io/name: postgres
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: postgres
+#   policyTypes:
+#     - Ingress
+#     - Egress
+#   ingress:
+#     # Only allow from kyc-blockchain pods
+#     - from:
+#         - podSelector:
+#             matchLabels:
+#               app.kubernetes.io/name: kyc-blockchain
+#       ports:
+#         - protocol: TCP
+#           port: 5432
+#   egress:
+#     # Allow all outbound traffic for PostgreSQL operations
+#     - {}
+#     # # Allow DNS only
+#     # - to:
+#     #     - namespaceSelector: {}
+#     #   ports:
+#     #     - protocol: UDP
+#     #       port: 53

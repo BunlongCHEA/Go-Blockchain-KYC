@@ -14,8 +14,8 @@ spec:
     directory:
       recurse: true
       # Exclude files that require CRDs not installed
-      exclude: |
-        12-monitoring.yaml
+      # exclude: |
+      #   12-monitoring.yaml
   # Destination cluster and namespace
   destination:
     server: https://kubernetes.default.svc

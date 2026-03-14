@@ -1,96 +1,219 @@
-# apiVersion: monitoring.coreos.com/v1
-# kind: ServiceMonitor
-# metadata:
-#   name: kyc-blockchain-monitor
-#   namespace: kyc-blockchain
-# spec:
-#   selector:
-#     matchLabels:
-#       app.kubernetes.io/name: kyc-blockchain
-#   endpoints:
-#     - port: metrics
-#       interval: 30s
+# ============================================================
+# KYC Blockchain Application - ServiceMonitor
+# ============================================================
+# HOW IT WORKS:
+#   Prometheus Operator watches for ServiceMonitor CRDs.
+#   This tells Prometheus: "Scrape pods behind services that
+#   match label app.kubernetes.io/name: kyc-blockchain,
+#   on the port named 'metrics', every 30s, at /metrics."
+#
+# REQUIREMENTS:
+#   1. Prometheus Operator must be installed (kube-prometheus-stack Helm chart)
+#   2. Your app must expose /metrics on port 9090 (Spring Boot Actuator + Micrometer)
+#   3. The Service (05-service.yaml) must have a port named "metrics" on 9090
+#   4. NetworkPolicy (08-network-policy.yaml) must allow ingress from monitoring namespace
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kyc-blockchain-monitor
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+    # This label is critical — Prometheus Operator uses it to discover ServiceMonitors.
+    # Check your Prometheus CR's serviceMonitorSelector to confirm the label it expects.
+    # Example: kubectl get prometheus -n monitoring -o yaml | grep -A5 serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyc-blockchain
+  namespaceSelector:
+    matchNames:
+      - kyc-blockchain
+  endpoints:
+    - port: metrics        # Must match the port NAME in 05-service.yaml (name: metrics)
+      interval: 30s
+      path: /metrics       # Explicit path — Spring Boot Actuator default with Micrometer
+      scrapeTimeout: 10s
 
-# ---
-# apiVersion: monitoring.coreos.com/v1
-# kind: PrometheusRule
-# metadata:
-#   name: kyc-blockchain-alerts
-#   namespace: kyc-blockchain
-# spec:
-#   groups:
-#     - name: kyc-blockchain.rules
-#       rules: []
+---
+# ============================================================
+# PostgreSQL Exporter - ServiceMonitor
+# ============================================================
+# HOW IT WORKS:
+#   postgres-exporter runs as a sidecar or separate pod,
+#   connects to PostgreSQL, and exposes DB metrics at /metrics
+#   on port 9187 (default exporter port).
+#   This ServiceMonitor tells Prometheus to scrape it.
+#
+# REQUIREMENTS:
+#   1. postgres-exporter must be deployed (see 13-postgres-exporter.yaml)
+#   2. A Service exposing port 9187 named "pg-metrics" must exist
+#   3. NetworkPolicy must allow Prometheus to reach postgres-exporter
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres-monitor
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  namespaceSelector:
+    matchNames:
+      - kyc-blockchain
+  endpoints:
+    - port: pg-metrics     # Must match port NAME in postgres-exporter Service
+      interval: 30s
+      path: /metrics
+      scrapeTimeout: 10s
 
-#####
+---
+# ============================================================
+# PrometheusRule - Alert Rules for App & PostgreSQL
+# ============================================================
+# HOW IT WORKS:
+#   Prometheus Operator loads these rules into Prometheus.
+#   Prometheus evaluates the PromQL expressions continuously.
+#   When a condition is true for the specified `for` duration,
+#   it fires an alert → Alertmanager → Slack/PagerDuty/Email.
+#
+# FLOW:
+#   Prometheus → evaluates rules → fires alert → Alertmanager → notification channel
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kyc-blockchain-alerts
+  namespace: kyc-blockchain
+  labels:
+    app.kubernetes.io/name: kyc-blockchain
+spec:
+  groups:
+    # --------------------------------------------------------
+    # Application Alerts
+    # --------------------------------------------------------
+    - name: kyc-blockchain.rules
+      rules:
+        # ALERT: Application pod is down
+        # WHY: up{} is a built-in metric Prometheus generates per scrape target.
+        #      Value 0 means the scrape failed (pod unreachable/crashed).
+        - alert: KYCBlockchainDown
+          expr: up{namespace="kyc-blockchain", service=~".*kyc-blockchain.*"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "KYC Blockchain service is down"
+            description: "{{ $labels.pod }} has been unreachable for 5 minutes."
 
-# # apiVersion: monitoring.coreos.com/v1
-# # kind: ServiceMonitor
-# # metadata:
-# #   name: kyc-blockchain-monitor
-# #   namespace: kyc-blockchain
-# #   labels:
-# #     app.kubernetes.io/name: kyc-blockchain
-# # spec:
-# #   selector:
-# #     matchLabels:
-# #       app.kubernetes.io/name: kyc-blockchain
-# #   endpoints:
-# #     - port: metrics
-# #       interval: 30s
-# #       path: /metrics
-# #   namespaceSelector:
-# #     matchNames:
-# #       - kyc-blockchain
+        # ALERT: High HTTP 5xx error rate (>5%)
+        # WHY: Indicates server-side failures. Needs Micrometer http_server_requests_seconds_count metric.
+        - alert: KYCBlockchainHighErrorRate
+          expr: |
+            (
+              sum(rate(http_server_requests_seconds_count{namespace="kyc-blockchain", status=~"5.."}[5m]))
+              / sum(rate(http_server_requests_seconds_count{namespace="kyc-blockchain"}[5m]))
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High HTTP error rate on KYC Blockchain"
+            description: "5xx error rate is {{ $value | humanizePercentage }} (threshold: 5%)."
 
-# # ---
-# # apiVersion: monitoring.coreos.com/v1
-# # kind: PrometheusRule
-# # metadata:
-# #   name: kyc-blockchain-alerts
-# #   namespace: kyc-blockchain
-# #   labels:
-# #     app.kubernetes.io/name: kyc-blockchain
-# # spec:
-# #   groups:
-# #     - name: kyc-blockchain.rules
-# #       rules:
-# #         - alert: KYCBlockchainDown
-# #           expr: up{job="kyc-blockchain"} == 0
-# #           for: 5m
-# #           labels:
-# #             severity: critical
-# #           annotations:
-# #             summary: "KYC Blockchain service is down"
-# #             description: "KYC Blockchain service has been down for more than 5 minutes."
+        # ALERT: High latency (P95 > 2 seconds)
+        # WHY: Slow responses degrade user experience. Uses Micrometer histogram.
+        - alert: KYCBlockchainHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_server_requests_seconds_bucket{namespace="kyc-blockchain"}[5m])) by (le)
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High P95 latency on KYC Blockchain"
+            description: "95th percentile latency is {{ $value }}s (threshold: 2s)."
 
-# #         - alert: KYCBlockchainHighErrorRate
-# #           expr: |
-# #             sum(rate(http_requests_total{job="kyc-blockchain",status=~"5.."}[5m]))
-# #             / sum(rate(http_requests_total{job="kyc-blockchain"}[5m])) > 0.05
-# #           for: 5m
-# #           labels:
-# #             severity: warning
-# #           annotations:
-# #             summary: "High error rate on KYC Blockchain"
-# #             description: "Error rate is above 5% for the last 5 minutes."
+        # ALERT: High memory usage (>85% of limit)
+        # WHY: JVM apps can OOM. This gives early warning.
+        - alert: KYCBlockchainHighMemory
+          expr: |
+            container_memory_working_set_bytes{namespace="kyc-blockchain", container="kyc-blockchain"}
+            / container_spec_memory_limit_bytes{namespace="kyc-blockchain", container="kyc-blockchain"}
+            > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KYC Blockchain memory usage above 85%"
+            description: "Container memory approaching its limit."
 
-# #         - alert: KYCBlockchainHighLatency
-# #           expr: |
-# #             histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="kyc-blockchain"}[5m])) by (le))
-# #             > 2
-# #           for: 5m
-# #           labels:
-# #             severity: warning
-# #           annotations:
-# #             summary: "High latency on KYC Blockchain"
-# #             description: "95th percentile latency is above 2 seconds."
+        # ALERT: Pod restarts
+        # WHY: Frequent restarts indicate crash loops or OOM kills.
+        - alert: KYCBlockchainPodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="kyc-blockchain", container="kyc-blockchain"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KYC Blockchain pod restarting frequently"
+            description: "{{ $labels.pod }} restarted {{ $value }} times in the last hour."
 
-# #         - alert: PostgresDown
-# #           expr: pg_up{job="postgres"} == 0
-# #           for: 1m
-# #           labels:
-# #             severity: critical
-# #           annotations:
-# #             summary: "PostgreSQL is down"
-# #             description: "PostgreSQL database is unreachable."
+    # --------------------------------------------------------
+    # PostgreSQL Alerts
+    # --------------------------------------------------------
+    - name: postgres.rules
+      rules:
+        # ALERT: PostgreSQL is down
+        # WHY: pg_up is exposed by postgres-exporter. 0 = cannot connect to DB.
+        - alert: PostgresDown
+          expr: pg_up{namespace="kyc-blockchain"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL is down"
+            description: "PostgreSQL database is unreachable for more than 1 minute."
+
+        # ALERT: Too many active connections (>80% of max)
+        # WHY: Connection exhaustion causes app failures.
+        #      Default max_connections=100. Adjust threshold as needed.
+        - alert: PostgresTooManyConnections
+          expr: |
+            sum(pg_stat_activity_count{namespace="kyc-blockchain"})
+            / pg_settings_max_connections{namespace="kyc-blockchain"}
+            > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL connection usage is high"
+            description: "Active connections are at {{ $value | humanizePercentage }} of max_connections."
+
+        # ALERT: Slow queries detected
+        # WHY: Queries running longer than 5 minutes may indicate missing indexes or locks.
+        - alert: PostgresSlowQueries
+          expr: |
+            pg_stat_activity_max_tx_duration{namespace="kyc-blockchain", state="active"} > 300
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL has long-running queries"
+            description: "Queries running longer than 5 minutes detected."
+
+        # ALERT: Replication lag (if you add read replicas later)
+        - alert: PostgresReplicationLag
+          expr: pg_replication_lag{namespace="kyc-blockchain"} > 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL replication lag is high"
+            description: "Replication lag is {{ $value }}s (threshold: 30s)."
