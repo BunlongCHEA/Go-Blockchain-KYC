@@ -49,7 +49,7 @@ RUN mkdir -p /app/keys /app/logs && \
 USER appuser
 
 # Expose port
-EXPOSE 8080
+EXPOSE 8080 9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

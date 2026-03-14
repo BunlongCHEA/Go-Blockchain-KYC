@@ -104,6 +104,7 @@ func main() {
 	monitoringConfig := monitoring.DefaultMonitoringConfig()
 	monitoringService := monitoring.NewMonitoringService(store, monitoringConfig)
 	monitoringService.Start()
+	monitoring.StartMetricsServer(cfg.Monitoring.MetricsPort) // start Prometheus metrics on :9090
 
 	// Setup demo data
 	log.Println("\n9. Setting Up Demo Data...")

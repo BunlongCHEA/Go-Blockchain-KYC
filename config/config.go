@@ -15,6 +15,7 @@ type Config struct {
 	Consensus    ConsensusConfig    `json:"consensus"`
 	Blockchain   BlockchainConfig   `json:"blockchain"`
 	Verification VerificationConfig `json:"verification"`
+	Monitoring   MonitoringConfig   `json:"monitoring"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -140,6 +141,13 @@ type VerificationConfig struct {
 	TruliooAPIKey string  `json:"trulioo_api_key"`
 }
 
+// MonitoringConfig holds Prometheus metrics configuration
+type MonitoringConfig struct {
+	Enabled     bool   `json:"enabled"`
+	MetricsPort int    `json:"metrics_port"`
+	LogLevel    string `json:"log_level"`
+}
+
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -185,6 +193,11 @@ func DefaultConfig() *Config {
 			Difficulty:    2,
 			MaxTxPerBlock: 100,
 			BlockInterval: 10,
+		},
+		Monitoring: MonitoringConfig{
+			Enabled:     true,
+			MetricsPort: 9090,
+			LogLevel:    "info",
 		},
 	}
 }

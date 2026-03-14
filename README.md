@@ -788,3 +788,20 @@ Set Request Body (JSON)
     "description": "Updated phone number"
 }
 ```
+
+# V. Kubernetes
+
+## Diagnose — Is the App Listening on 9090?
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+# Check what ports the container is actually listening on
+kubectl exec -it kyc-blockchain-0 -n kyc-blockchain -- sh -c "netstat -tlnp 2>/dev/null || ss -tlnp 2>/dev/null || cat /proc/net/tcp"
+
+# Try hitting the metrics endpoint from inside the pod
+kubectl exec -it kyc-blockchain-0 -n kyc-blockchain -- sh -c "wget -qO- http://localhost:9090/metrics 2>&1 || echo 'PORT 9090 NOT LISTENING'"
+
+# Also check port 8080 (main app) works
+kubectl exec -it kyc-blockchain-0 -n kyc-blockchain -- sh -c "wget -qO- http://localhost:8080/health 2>&1 || echo 'PORT 8080 NOT LISTENING'"
+```
