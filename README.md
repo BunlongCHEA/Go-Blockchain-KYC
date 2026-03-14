@@ -789,7 +789,7 @@ Set Request Body (JSON)
 }
 ```
 
-# V. Kubernetes
+# V. Kubernetes & Monitoring
 
 ## Diagnose — Is the App Listening on 9090?
 
@@ -805,3 +805,60 @@ kubectl exec -it kyc-blockchain-0 -n kyc-blockchain -- sh -c "wget -qO- http://l
 # Also check port 8080 (main app) works
 kubectl exec -it kyc-blockchain-0 -n kyc-blockchain -- sh -c "wget -qO- http://localhost:8080/health 2>&1 || echo 'PORT 8080 NOT LISTENING'"
 ```
+
+
+## Monitoring Go-KYC App & PostgreSQL with Grafana + Prometheus
+
+```bash
+  Grafana (grafana.bunlong.uk)
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Dashboard: Go App    Dashboard: PostgreSQL   Dashboard: Node│
+  │  (ID: 1860)           (ID: 9628)              (ID: 15757)   │
+  │       │                     │                       │        │
+  │       └─────────┬───────────┘───────────────────────┘        │
+  │                 ▼                                             │
+  │         Datasource: Prometheus                                │
+  └──────────────────┬───────────────────────────────────────────┘
+                     │ queries
+                     ▼
+  Prometheus (prometheus.bunlong.uk)
+  ┌─────────────────────────────────────────────────────���────────┐
+  │  Scrape Targets:                                             │
+  │                                                              │
+  │  ┌─────────────────┐  ┌──────────────────┐  ┌────────────┐  │
+  │  │ kyc-blockchain   │  │ postgres-exporter │  │ node       │  │
+  │  │ :9090/metrics    │  │ :9187/metrics     │  │ :9100      │  │
+  │  │                  │  │                   │  │            │  │
+  │  │ ServiceMonitor:  │  │ ServiceMonitor:   │  │ DaemonSet  │  │
+  │  │ 12-monitoring.yml│  │ 12-monitoring.yml │  │ (auto)     │  │
+  │  └────────┬─────────┘  └────────┬──────────┘  └────────────┘  │
+  └───────────┼──────────────────────┼────────────────────────────┘
+              │                      │
+  kyc-blockchain namespace           │
+  ┌───────────┼──────────────────────┼────────────────────────────┐
+  │           ▼                      ▼                             │
+  │  ┌─────────────────┐   ┌──────────────────┐                  │
+  │  │ Go App Pod       │   │ postgres-exporter │                  │
+  │  │ :8080 (API)      │   │ :9187 (metrics)   │                  │
+  │  │ :9090 (metrics)  │   │       │            │                  │
+  │  │                  │   │       │ SQL queries │                  │
+  │  │ metrics.go       │   │       ▼            │                  │
+  │  │ exports:         │   │ ┌──────────────┐  │                  │
+  │  │  http_requests   │   │ │ PostgreSQL   │  │                  │
+  │  │  request_duration│   │ │ :5432        │  │                  │
+  │  │  go_goroutines   │   │ │              │  │                  │
+  │  │  go_memstats     │   │ └──────────────┘  │                  │
+  │  └─────────────────┘   └──────────────��───┘                  │
+  └──────────────────────────────────────────────────────────────┘
+```
+Step 1: Verify Prometheus Targets Are UP
+Open https://prometheus.bunlong.uk → Click Status → Targets
+
+You should see 3 targets related to your app:
+
+| Method                 | Endpoint                       | Status   |
+|------------------------|--------------------------------|----------|
+| kyc-blockchain-monitor | http://10.42.0.72:9090/metrics | UP ✅   |
+| postgres-monitor       | http://10.42.0.72:9187/metrics | UP ✅   |
+| node-exporter          | http://10.42.0.72:9100/metrics | UP ✅   |
+
