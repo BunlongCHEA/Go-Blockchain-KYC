@@ -289,15 +289,22 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    # Allow external access via NodePort
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 5432
   egress:
     # Allow all outbound traffic for PostgreSQL operations
-    - {}
-    # # Allow DNS only
-    # - to:
-    #     - namespaceSelector: {}
-    #   ports:
-    #     - protocol: UDP
-    #       port: 53
+    # - {}
+    # Allow DNS only
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
 
 ---
 # ============================================================
