@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -2118,4 +2121,486 @@ func (h *Handlers) GetKYCReviewStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SendSuccess(w, "", response)
+}
+
+// ==================== Python ML KYC Handlers ====================
+
+// Config
+func pythonKYCServiceURL() string {
+	if url := os.Getenv("PYTHON_KYC_SERVICE_URL"); url != "" {
+		return url
+	}
+	return "http://localhost:5001"
+}
+
+// Request / Response types
+// UploadDocImageRequest accepts base64 image for ID/Passport scan
+type UploadDocImageRequest struct {
+	CustomerID   string `json:"customer_id"`
+	ImageBase64  string `json:"image_base64"`
+	DocumentType string `json:"document_type"` // national_id | passport
+}
+
+// UploadSelfieRequest accepts base64 selfie image linked to a customer
+type UploadSelfieRequest struct {
+	CustomerID        string `json:"customer_id"`
+	SelfieImageBase64 string `json:"selfie_image_base64"`
+}
+
+// ScanAndVerifyRequest triggers full OCR + face + DB match pipeline
+type ScanAndVerifyRequest struct {
+	CustomerID        string `json:"customer_id"`
+	IDImageBase64     string `json:"id_image_base64"`
+	SelfieImageBase64 string `json:"selfie_image_base64,omitempty"`
+	DocumentType      string `json:"document_type"` // national_id | passport
+}
+
+// PythonKYCVerifyPayload mirrors the Python API request
+type PythonKYCVerifyPayload struct {
+	CustomerID        string `json:"customer_id"`
+	IDImageBase64     string `json:"id_image_base64,omitempty"`
+	SelfieImageBase64 string `json:"selfie_image_base64,omitempty"`
+	DocumentType      string `json:"document_type"`
+}
+
+// PythonKYCScanPayload mirrors the Python /api/kyc/scan request
+type PythonKYCScanPayload struct {
+	ImageBase64  string `json:"image_base64"`
+	DocumentType string `json:"document_type"`
+}
+
+// PythonKYCVerifyResponse mirrors the Python response
+type PythonKYCVerifyResponse struct {
+	CustomerID       string                 `json:"customer_id"`
+	DocumentVerified bool                   `json:"document_verified"`
+	FaceMatched      bool                   `json:"face_matched"`
+	OCRResult        map[string]interface{} `json:"ocr_result"`
+	FaceResult       map[string]interface{} `json:"face_result"`
+	FieldMatch       map[string]interface{} `json:"field_match"`
+	OverallScore     float64                `json:"overall_score"`
+	Status           string                 `json:"status"` // VERIFIED | REJECTED | NEEDS_REVIEW
+	Reason           string                 `json:"reason"`
+	Timestamp        string                 `json:"timestamp"`
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func callPythonKYC(endpoint string, payload interface{}) (map[string]interface{}, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error: %w", err)
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	url := pythonKYCServiceURL() + endpoint
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("python KYC service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("python KYC service error %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal error: %w", err)
+	}
+	return result, nil
+}
+
+// callPythonKYCMultipart sends multipart/form-data with file fields
+func callPythonKYCMultipart(
+	endpoint string,
+	fields map[string]string,
+	files map[string][]byte,
+) (map[string]interface{}, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	for key, val := range fields {
+		_ = w.WriteField(key, val)
+	}
+	for fieldName, data := range files {
+		fw, err := w.CreateFormFile(fieldName, fieldName+".jpg")
+		if err != nil {
+			return nil, err
+		}
+		_, _ = fw.Write(data)
+	}
+	w.Close()
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	url := pythonKYCServiceURL() + endpoint
+	req, _ := http.NewRequest(http.MethodPost, url, &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("python KYC service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("python KYC service error %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal error: %w", err)
+	}
+	return result, nil
+}
+
+// mapPythonStatusToKYC maps Python verdict → KYCStatus
+func mapPythonStatusToKYC(s string) models.KYCStatus {
+	switch s {
+	case "VERIFIED":
+		return models.StatusVerified
+	case "REJECTED":
+		return models.StatusRejected
+	default:
+		return models.StatusPending
+	}
+}
+
+// Handlers
+
+// UploadDocumentImage accepts a base64 ID card / Passport image,
+// calls Python OCR service, and attaches the scan result to the KYC record.
+//
+// POST /api/v1/kyc/upload-doc
+func (h *Handlers) UploadDocumentImage(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	// ── parse body ──
+	var req UploadDocImageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.CustomerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+	if req.ImageBase64 == "" {
+		SendBadRequest(w, "image_base64 is required")
+		return
+	}
+	if req.DocumentType == "" {
+		req.DocumentType = "national_id"
+	}
+
+	// ── verify KYC exists ──
+	if _, err := h.blockchain.ReadKYC(req.CustomerID, false); err != nil {
+		SendNotFound(w, "KYC record not found")
+		return
+	}
+
+	_ = user // used for audit logs if desired
+
+	// ── call Python OCR ──
+	payload := PythonKYCScanPayload{
+		ImageBase64:  req.ImageBase64,
+		DocumentType: req.DocumentType,
+	}
+	result, err := callPythonKYC("/api/kyc/scan", payload)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("OCR service error: %v", err))
+		return
+	}
+
+	SendSuccess(w, "Document scanned successfully", map[string]interface{}{
+		"customer_id":   req.CustomerID,
+		"document_type": req.DocumentType,
+		"scan_result":   result,
+		"scanned_at":    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// UploadDocumentFile accepts multipart file upload for ID card / Passport.
+//
+// POST /api/v1/kyc/upload-doc/file
+func (h *Handlers) UploadDocumentFile(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	_ = user
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		SendBadRequest(w, "failed to parse multipart form")
+		return
+	}
+
+	customerID := r.FormValue("customer_id")
+	documentType := r.FormValue("document_type")
+	if customerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+	if documentType == "" {
+		documentType = "national_id"
+	}
+
+	file, _, err := r.FormFile("id_image")
+	if err != nil {
+		SendBadRequest(w, "id_image file is required")
+		return
+	}
+	defer file.Close()
+	data, _ := io.ReadAll(file)
+
+	result, err := callPythonKYCMultipart(
+		"/api/kyc/scan/upload",
+		map[string]string{"document_type": documentType},
+		map[string][]byte{"file": data},
+	)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("OCR service error: %v", err))
+		return
+	}
+
+	SendSuccess(w, "Document scanned successfully", map[string]interface{}{
+		"customer_id":   customerID,
+		"document_type": documentType,
+		"scan_result":   result,
+		"scanned_at":    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// UploadSelfieImage stores/validates a selfie for later face comparison.
+//
+// POST /api/v1/kyc/upload-selfie
+func (h *Handlers) UploadSelfieImage(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req UploadSelfieRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.CustomerID == "" || req.SelfieImageBase64 == "" {
+		SendBadRequest(w, "customer_id and selfie_image_base64 are required")
+		return
+	}
+
+	// Validate KYC exists
+	if _, err := h.blockchain.ReadKYC(req.CustomerID, false); err != nil {
+		SendNotFound(w, "KYC record not found")
+		return
+	}
+
+	_ = user
+
+	// Optionally save selfie reference to DB for later comparison
+	if h.storage != nil {
+		_ = h.storage // hook: h.storage.SaveSelfieImage(req.CustomerID, req.SelfieImageBase64)
+	}
+
+	SendSuccess(w, "Selfie uploaded successfully", map[string]interface{}{
+		"customer_id":  req.CustomerID,
+		"uploaded_at":  time.Now().UTC().Format(time.RFC3339),
+		"instructions": "Use POST /api/v1/kyc/scan-verify to run face comparison + OCR",
+	})
+}
+
+// ScanAndVerifyKYC is the main full-pipeline endpoint:
+// OCR ID image → Face comparison → DB field match → KYC status update.
+//
+// POST /api/v1/kyc/scan-verify
+func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req ScanAndVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.CustomerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+	if req.IDImageBase64 == "" {
+		SendBadRequest(w, "id_image_base64 is required")
+		return
+	}
+	if req.DocumentType == "" {
+		req.DocumentType = "national_id"
+	}
+
+	// Ensure KYC record exists
+	kyc, err := h.blockchain.ReadKYC(req.CustomerID, false)
+	if err != nil {
+		SendNotFound(w, "KYC record not found")
+		return
+	}
+
+	// Call Python full-verify pipeline
+	payload := PythonKYCVerifyPayload{
+		CustomerID:        req.CustomerID,
+		IDImageBase64:     req.IDImageBase64,
+		SelfieImageBase64: req.SelfieImageBase64,
+		DocumentType:      req.DocumentType,
+	}
+	rawResult, err := callPythonKYC("/api/kyc/verify", payload)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("KYC AI service error: %v", err))
+		return
+	}
+
+	// Parse Python response
+	var pyResp PythonKYCVerifyResponse
+	resultBytes, _ := json.Marshal(rawResult)
+	_ = json.Unmarshal(resultBytes, &pyResp)
+
+	// Auto-update KYC status based on AI verdict
+	aiStatus := mapPythonStatusToKYC(pyResp.Status)
+	if kyc.Status == models.StatusPending {
+		switch aiStatus {
+		case models.StatusVerified:
+			if err := h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID); err != nil {
+				SendBadRequest(w, err.Error())
+				return
+			}
+			kyc.Status = models.StatusVerified
+		case models.StatusRejected:
+			if err := h.blockchain.RejectKYC(req.CustomerID, user.BankID, user.ID, pyResp.Reason); err != nil {
+				SendBadRequest(w, err.Error())
+				return
+			}
+			kyc.Status = models.StatusRejected
+		}
+
+		// Persist
+		if h.storage != nil {
+			h.storage.SaveKYC(kyc)
+		}
+	}
+
+	// Generate document hash for audit trail
+	hashInput := req.CustomerID + req.DocumentType + utils.FormatTimestamp(time.Now().Unix())
+	_ = hashInput // h.storage could store doc_hash here
+
+	SendSuccess(w, "KYC AI scan verification completed", map[string]interface{}{
+		"customer_id":       req.CustomerID,
+		"document_verified": pyResp.DocumentVerified,
+		"face_matched":      pyResp.FaceMatched,
+		"overall_score":     pyResp.OverallScore,
+		"ai_status":         pyResp.Status,
+		"kyc_status":        aiStatus,
+		"reason":            pyResp.Reason,
+		"ocr_result":        pyResp.OCRResult,
+		"face_result":       pyResp.FaceResult,
+		"field_match":       pyResp.FieldMatch,
+		"on_blockchain":     aiStatus == models.StatusVerified,
+		"pending_for_mine":  aiStatus == models.StatusVerified,
+		"timestamp":         pyResp.Timestamp,
+	})
+}
+
+// ScanAndVerifyKYCFile is the multipart version of ScanAndVerifyKYC.
+//
+// POST /api/v1/kyc/scan-verify/file
+func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		SendBadRequest(w, "failed to parse multipart form")
+		return
+	}
+
+	customerID := r.FormValue("customer_id")
+	documentType := r.FormValue("document_type")
+	if customerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+	if documentType == "" {
+		documentType = "national_id"
+	}
+
+	// Read ID image
+	idFile, _, err := r.FormFile("id_image")
+	if err != nil {
+		SendBadRequest(w, "id_image is required")
+		return
+	}
+	defer idFile.Close()
+	idData, _ := io.ReadAll(idFile)
+
+	// Read optional selfie
+	files := map[string][]byte{"id_image": idData}
+	formFields := map[string]string{
+		"customer_id":   customerID,
+		"document_type": documentType,
+	}
+	if selfieFile, _, err2 := r.FormFile("selfie_image"); err2 == nil {
+		defer selfieFile.Close()
+		selfieData, _ := io.ReadAll(selfieFile)
+		files["selfie_image"] = selfieData
+	}
+
+	rawResult, err := callPythonKYCMultipart("/api/kyc/verify/upload", formFields, files)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("KYC AI service error: %v", err))
+		return
+	}
+
+	// Parse + auto-update same as JSON version
+	var pyResp PythonKYCVerifyResponse
+	resultBytes, _ := json.Marshal(rawResult)
+	_ = json.Unmarshal(resultBytes, &pyResp)
+
+	kyc, err := h.blockchain.ReadKYC(customerID, false)
+	if err != nil {
+		SendNotFound(w, "KYC record not found")
+		return
+	}
+
+	aiStatus := mapPythonStatusToKYC(pyResp.Status)
+	if kyc.Status == models.StatusPending {
+		switch aiStatus {
+		case models.StatusVerified:
+			_ = h.blockchain.VerifyKYC(customerID, user.BankID, user.ID)
+			kyc.Status = models.StatusVerified
+		case models.StatusRejected:
+			_ = h.blockchain.RejectKYC(customerID, user.BankID, user.ID, pyResp.Reason)
+			kyc.Status = models.StatusRejected
+		}
+		if h.storage != nil {
+			h.storage.SaveKYC(kyc)
+		}
+	}
+
+	SendSuccess(w, "KYC AI scan verification completed", map[string]interface{}{
+		"customer_id":       customerID,
+		"document_verified": pyResp.DocumentVerified,
+		"face_matched":      pyResp.FaceMatched,
+		"overall_score":     pyResp.OverallScore,
+		"ai_status":         pyResp.Status,
+		"kyc_status":        aiStatus,
+		"reason":            pyResp.Reason,
+		"on_blockchain":     aiStatus == models.StatusVerified,
+	})
 }

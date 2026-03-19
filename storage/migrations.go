@@ -57,6 +57,12 @@ var Migrations = []string{
 		risk_level VARCHAR(20) DEFAULT 'medium',
 		bank_id VARCHAR(50) NOT NULL,
 		encryption_key_id VARCHAR(50),
+		id_image_path TEXT,
+		selfie_image_path TEXT,
+		last_scan_at TIMESTAMPTZ,
+		scan_score NUMERIC(5,2),
+		scan_status VARCHAR(20),
+		ocr_result JSONB,
 		created_at BIGINT NOT NULL,
 		updated_at BIGINT NOT NULL
 	)`,
