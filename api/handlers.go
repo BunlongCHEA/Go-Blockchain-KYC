@@ -373,7 +373,7 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save to database
-	log.Printf("SaveKYC result for %s: %v", kycData.CustomerID, h.storage.SaveKYC(kycData))
+	// log.Printf("SaveKYC result for %s: %v", kycData.CustomerID, h.storage.SaveKYC(kycData))
 
 	if h.storage != nil {
 		if err := h.storage.SaveKYC(kycData); err != nil {
@@ -2238,7 +2238,7 @@ func callPythonKYCMultipart(
 	}
 	w.Close()
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 	url := pythonKYCServiceURL() + endpoint
 	req, _ := http.NewRequest(http.MethodPost, url, &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
@@ -2584,6 +2584,16 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// After parsing pyResp, populate scan fields onto kyc regardless of status
+	now := time.Now()
+	kyc.LastScanAt = &now
+	score := pyResp.OverallScore
+	kyc.ScanScore = &score
+	kyc.ScanStatus = pyResp.Status // "VERIFIED" | "REJECTED" | "NEEDS_REVIEW"
+	if pyResp.OCRResult != nil {
+		kyc.OCRResult = pyResp.OCRResult
+	}
+
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
@@ -2595,8 +2605,14 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 			kyc.Status = models.StatusRejected
 		}
 
+		log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
+		// if h.storage != nil {
+		// 	h.storage.SaveKYC(kyc)
+		// }
 		if h.storage != nil {
-			h.storage.SaveKYC(kyc)
+			if err := h.storage.SaveKYC(kyc); err != nil {
+				log.Printf("ERROR SaveKYC %s: %v", customerID, err)
+			}
 		}
 	}
 

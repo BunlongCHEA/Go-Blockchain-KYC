@@ -39,7 +39,7 @@ func (s *ServerConfig) GetReadTimeout() time.Duration {
 
 func (s *ServerConfig) GetWriteTimeout() time.Duration {
 	if s.WriteTimeout <= 0 {
-		return 30 * time.Second
+		return 120 * time.Second
 	}
 	return time.Duration(s.WriteTimeout) * time.Second
 }
