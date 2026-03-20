@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -372,8 +373,13 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save to database
+	log.Printf("SaveKYC result for %s: %v", kycData.CustomerID, h.storage.SaveKYC(kycData))
+
 	if h.storage != nil {
-		h.storage.SaveKYC(kycData)
+		if err := h.storage.SaveKYC(kycData); err != nil {
+			SendInternalError(w, fmt.Sprintf("failed to save KYC to database: %v", err))
+			return
+		}
 	}
 
 	// SendCreated(w, "KYC created successfully", map[string]interface{}{
@@ -2588,6 +2594,7 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 			_ = h.blockchain.RejectKYC(customerID, user.BankID, user.ID, pyResp.Reason)
 			kyc.Status = models.StatusRejected
 		}
+
 		if h.storage != nil {
 			h.storage.SaveKYC(kyc)
 		}

@@ -454,10 +454,16 @@ func (p *PostgresStorage) scanTransactions(rows *sql.Rows) ([]*models.Transactio
 
 // SaveKYC saves a KYC record
 func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
-	var ocrResultJSON []byte
+	// ── OCR result: nil map → SQL NULL, not empty bytes ──────────────
+	var ocrResultJSON interface{} // use interface{} so nil → SQL NULL
 	if kyc.OCRResult != nil {
-		ocrResultJSON, _ = json.Marshal(kyc.OCRResult)
+		b, err := json.Marshal(kyc.OCRResult)
+		if err != nil {
+			return fmt.Errorf("failed to marshal ocr_result: %w", err)
+		}
+		ocrResultJSON = b // []byte → Postgres accepts as JSONB
 	}
+	// ocrResultJSON stays nil (interface nil) → driver sends SQL NULL
 
 	query := `
 		INSERT INTO kyc_records (
@@ -468,32 +474,32 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 			document_hash, risk_level, bank_id, encryption_key_id, id_image_path, selfie_image_path, last_scan_at, scan_score, scan_status, ocr_result, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 		ON CONFLICT (customer_id) DO UPDATE SET
-			first_name = EXCLUDED.first_name,
-			last_name = EXCLUDED.last_name,
-			date_of_birth = EXCLUDED.date_of_birth,
-			nationality = EXCLUDED.nationality,
-			id_type = EXCLUDED.id_type,
-			id_number_encrypted = EXCLUDED.id_number_encrypted,
-			id_expiry_date = EXCLUDED.id_expiry_date,
-			address_street = EXCLUDED.address_street,
-			address_city = EXCLUDED.address_city,
-			address_state = EXCLUDED.address_state,
-			address_postal_code = EXCLUDED.address_postal_code,
-			address_country = EXCLUDED.address_country,
-			email_encrypted = EXCLUDED.email_encrypted,
-			phone_encrypted = EXCLUDED.phone_encrypted,
-			status = EXCLUDED.status,
-			verified_by = EXCLUDED.verified_by,
-			verification_date = EXCLUDED.verification_date,
-			document_hash = EXCLUDED.document_hash,
-			risk_level = EXCLUDED.risk_level,
-			id_image_path        = EXCLUDED.id_image_path,
-			selfie_image_path    = EXCLUDED.selfie_image_path,
-			last_scan_at         = EXCLUDED.last_scan_at,
-			scan_score           = EXCLUDED.scan_score,
-			scan_status          = EXCLUDED.scan_status,
-			ocr_result           = EXCLUDED.ocr_result,
-			updated_at = EXCLUDED.updated_at
+			first_name           = EXCLUDED.first_name,
+            last_name            = EXCLUDED.last_name,
+            date_of_birth        = EXCLUDED.date_of_birth,
+            nationality          = EXCLUDED.nationality,
+            id_type              = EXCLUDED.id_type,
+            id_number_encrypted  = EXCLUDED.id_number_encrypted,
+            id_expiry_date       = EXCLUDED.id_expiry_date,
+            address_street       = EXCLUDED.address_street,
+            address_city         = EXCLUDED.address_city,
+            address_state        = EXCLUDED.address_state,
+            address_postal_code  = EXCLUDED.address_postal_code,
+            address_country      = EXCLUDED.address_country,
+            email_encrypted      = EXCLUDED.email_encrypted,
+            phone_encrypted      = EXCLUDED.phone_encrypted,
+            status               = EXCLUDED.status,
+            verified_by          = EXCLUDED.verified_by,
+            verification_date    = EXCLUDED.verification_date,
+            document_hash        = EXCLUDED.document_hash,
+            risk_level           = EXCLUDED.risk_level,
+            id_image_path        = EXCLUDED.id_image_path,
+            selfie_image_path    = EXCLUDED.selfie_image_path,
+            last_scan_at         = EXCLUDED.last_scan_at,
+            scan_score           = EXCLUDED.scan_score,
+            scan_status          = EXCLUDED.scan_status,
+            ocr_result           = EXCLUDED.ocr_result,
+            updated_at           = EXCLUDED.updated_at
 	`
 
 	var idNumber, email, phone, keyID string
@@ -509,37 +515,36 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 	}
 
 	_, err := p.db.Exec(query,
-		kyc.CustomerID,
-		kyc.FirstName,
-		kyc.LastName,
-		kyc.DateOfBirth,
-		kyc.Nationality,
-		kyc.IDType,
-		idNumber,
-		kyc.IDExpiryDate,
-		kyc.Address.Street,
-		kyc.Address.City,
-		kyc.Address.State,
-		kyc.Address.PostalCode,
-		kyc.Address.Country,
-		email,
-		phone,
-		kyc.Status,
-		kyc.VerifiedBy,
-		kyc.VerificationDate,
-		kyc.DocumentHash,
-		kyc.RiskLevel,
-		kyc.BankID,
-		keyID,
-		kyc.IDImagePath,
-		kyc.SelfieImagePath,
-		kyc.LastScanAt, // *time.Time → TIMESTAMPTZ (nil → NULL)
-		kyc.ScanScore,  // *float64  → NUMERIC(5,2) (nil → NULL)
-		kyc.ScanStatus,
-		ocrResultJSON, // []byte    → JSONB (nil → NULL)
-		// $29–$30
-		kyc.CreatedAt,
-		kyc.UpdatedAt,
+		kyc.CustomerID,         // $1
+		kyc.FirstName,          // $2
+		kyc.LastName,           // $3
+		kyc.DateOfBirth,        // $4
+		kyc.Nationality,        // $5
+		kyc.IDType,             // $6
+		idNumber,               // $7
+		kyc.IDExpiryDate,       // $8
+		kyc.Address.Street,     // $9
+		kyc.Address.City,       // $10
+		kyc.Address.State,      // $11
+		kyc.Address.PostalCode, // $12
+		kyc.Address.Country,    // $13
+		email,                  // $14
+		phone,                  // $15
+		kyc.Status,             // $16
+		kyc.VerifiedBy,         // $17
+		kyc.VerificationDate,   // $18
+		kyc.DocumentHash,       // $19
+		kyc.RiskLevel,          // $20
+		kyc.BankID,             // $21
+		keyID,                  // $22
+		kyc.IDImagePath,        // $23
+		kyc.SelfieImagePath,    // $24
+		kyc.LastScanAt,         // $25  *time.Time → NULL when nil
+		kyc.ScanScore,          // $26  *float64   → NULL when nil
+		kyc.ScanStatus,         // $27
+		ocrResultJSON,          // $28  interface{} nil → SQL NULL ✓
+		kyc.CreatedAt,          // $29
+		kyc.UpdatedAt,          // $30
 	)
 
 	if err != nil {
