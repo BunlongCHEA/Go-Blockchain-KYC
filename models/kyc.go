@@ -58,6 +58,14 @@ type KYCData struct {
 	NextReviewDate int64  `json:"next_review_date"`
 	ReviewCount    int    `json:"review_count"`
 	ReviewNotes    string `json:"review_notes,omitempty"`
+
+	// AI Scan fields
+	IDImagePath     string                 `json:"id_image_path,omitempty"`
+	SelfieImagePath string                 `json:"selfie_image_path,omitempty"`
+	LastScanAt      *time.Time             `json:"last_scan_at,omitempty"`
+	ScanScore       *float64               `json:"scan_score,omitempty"`
+	ScanStatus      string                 `json:"scan_status,omitempty"`
+	OCRResult       map[string]interface{} `json:"ocr_result,omitempty"`
 }
 
 // EncryptedKYCData holds encrypted sensitive fields

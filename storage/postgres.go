@@ -454,14 +454,19 @@ func (p *PostgresStorage) scanTransactions(rows *sql.Rows) ([]*models.Transactio
 
 // SaveKYC saves a KYC record
 func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
+	var ocrResultJSON []byte
+	if kyc.OCRResult != nil {
+		ocrResultJSON, _ = json.Marshal(kyc.OCRResult)
+	}
+
 	query := `
 		INSERT INTO kyc_records (
 			customer_id, first_name, last_name, date_of_birth, nationality,
 			id_type, id_number_encrypted, id_expiry_date,
 			address_street, address_city, address_state, address_postal_code, address_country,
 			email_encrypted, phone_encrypted, status, verified_by, verification_date,
-			document_hash, risk_level, bank_id, encryption_key_id, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+			document_hash, risk_level, bank_id, encryption_key_id, id_image_path, selfie_image_path, last_scan_at, scan_score, scan_status, ocr_result, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 		ON CONFLICT (customer_id) DO UPDATE SET
 			first_name = EXCLUDED.first_name,
 			last_name = EXCLUDED.last_name,
@@ -482,6 +487,12 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 			verification_date = EXCLUDED.verification_date,
 			document_hash = EXCLUDED.document_hash,
 			risk_level = EXCLUDED.risk_level,
+			id_image_path        = EXCLUDED.id_image_path,
+			selfie_image_path    = EXCLUDED.selfie_image_path,
+			last_scan_at         = EXCLUDED.last_scan_at,
+			scan_score           = EXCLUDED.scan_score,
+			scan_status          = EXCLUDED.scan_status,
+			ocr_result           = EXCLUDED.ocr_result,
 			updated_at = EXCLUDED.updated_at
 	`
 
@@ -520,6 +531,13 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 		kyc.RiskLevel,
 		kyc.BankID,
 		keyID,
+		kyc.IDImagePath,
+		kyc.SelfieImagePath,
+		kyc.LastScanAt, // *time.Time → TIMESTAMPTZ (nil → NULL)
+		kyc.ScanScore,  // *float64  → NUMERIC(5,2) (nil → NULL)
+		kyc.ScanStatus,
+		ocrResultJSON, // []byte    → JSONB (nil → NULL)
+		// $29–$30
 		kyc.CreatedAt,
 		kyc.UpdatedAt,
 	)
