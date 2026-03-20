@@ -2476,6 +2476,16 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	resultBytes, _ := json.Marshal(rawResult)
 	_ = json.Unmarshal(resultBytes, &pyResp)
 
+	// After parsing pyResp, populate scan fields onto kyc regardless of status
+	now := time.Now()
+	kyc.LastScanAt = &now
+	score := pyResp.OverallScore
+	kyc.ScanScore = &score
+	kyc.ScanStatus = pyResp.Status // "VERIFIED" | "REJECTED" | "NEEDS_REVIEW"
+	if pyResp.OCRResult != nil {
+		kyc.OCRResult = pyResp.OCRResult
+	}
+
 	// Auto-update KYC status based on AI verdict
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 	if kyc.Status == models.StatusPending {
@@ -2494,9 +2504,16 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 			kyc.Status = models.StatusRejected
 		}
 
-		// Persist
+		// // Persist
+		// if h.storage != nil {
+		// 	h.storage.SaveKYC(kyc)
+		// }
+
+		// Persist — now includes scan fields + status
 		if h.storage != nil {
-			h.storage.SaveKYC(kyc)
+			if err := h.storage.SaveKYC(kyc); err != nil {
+				log.Printf("ERROR SaveKYC %s: %v", req.CustomerID, err)
+			}
 		}
 	}
 
