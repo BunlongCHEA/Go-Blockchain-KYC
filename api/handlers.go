@@ -2486,6 +2486,9 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		kyc.OCRResult = pyResp.OCRResult
 	}
 
+	kyc.IDImagePath = fmt.Sprintf("uploads/%s/id_image.jpg", req.CustomerID)
+	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", req.CustomerID)
+
 	// Auto-update KYC status based on AI verdict
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 	if kyc.Status == models.StatusPending {
@@ -2610,6 +2613,11 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	if pyResp.OCRResult != nil {
 		kyc.OCRResult = pyResp.OCRResult
 	}
+
+	// Populate scan image paths on kyc before saving
+	// Save a reference path (not the raw bytes) for audit purposes
+	kyc.IDImagePath = fmt.Sprintf("uploads/%s/id_image.jpg", customerID)
+	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", customerID)
 
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 	if kyc.Status == models.StatusPending {
