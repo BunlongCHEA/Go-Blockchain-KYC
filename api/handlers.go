@@ -2507,17 +2507,17 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 			}
 			kyc.Status = models.StatusRejected
 		}
+	}
 
-		// // Persist
-		// if h.storage != nil {
-		// 	h.storage.SaveKYC(kyc)
-		// }
+	// // Persist
+	// if h.storage != nil {
+	// 	h.storage.SaveKYC(kyc)
+	// }
 
-		// Persist — now includes scan fields + status
-		if h.storage != nil {
-			if err := h.storage.SaveKYC(kyc); err != nil {
-				log.Printf("ERROR SaveKYC %s: %v", req.CustomerID, err)
-			}
+	// Persist — now includes scan fields + status
+	if h.storage != nil {
+		if err := h.storage.SaveKYC(kyc); err != nil {
+			log.Printf("ERROR SaveKYC %s: %v", req.CustomerID, err)
 		}
 	}
 
@@ -2622,24 +2622,33 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", customerID)
 
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
+
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
 		case models.StatusVerified:
-			_ = h.blockchain.VerifyKYC(customerID, user.BankID, user.ID)
+			if err := h.blockchain.VerifyKYC(customerID, user.BankID, user.ID); err != nil {
+				log.Printf("ERROR VerifyKYC %s: %v", customerID, err)
+				SendBadRequest(w, err.Error())
+				return
+			}
 			kyc.Status = models.StatusVerified
 		case models.StatusRejected:
-			_ = h.blockchain.RejectKYC(customerID, user.BankID, user.ID, pyResp.Reason)
+			if err := h.blockchain.RejectKYC(customerID, user.BankID, user.ID, pyResp.Reason); err != nil {
+				log.Printf("ERROR RejectKYC %s: %v", customerID, err)
+				SendBadRequest(w, err.Error())
+				return
+			}
 			kyc.Status = models.StatusRejected
 		}
+	}
 
-		log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
-		// if h.storage != nil {
-		// 	h.storage.SaveKYC(kyc)
-		// }
-		if h.storage != nil {
-			if err := h.storage.SaveKYC(kyc); err != nil {
-				log.Printf("ERROR SaveKYC %s: %v", customerID, err)
-			}
+	log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
+	// if h.storage != nil {
+	// 	h.storage.SaveKYC(kyc)
+	// }
+	if h.storage != nil {
+		if err := h.storage.SaveKYC(kyc); err != nil {
+			log.Printf("ERROR SaveKYC %s: %v", customerID, err)
 		}
 	}
 
