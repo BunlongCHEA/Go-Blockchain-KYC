@@ -2187,6 +2187,7 @@ type PythonKYCVerifyResponse struct {
 	Status           string                 `json:"status"` // VERIFIED | REJECTED | NEEDS_REVIEW
 	Reason           string                 `json:"reason"`
 	Timestamp        string                 `json:"timestamp"`
+	ScoreBreakdown   map[string]interface{} `json:"score_breakdown"`
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2535,6 +2536,7 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		"ocr_result":        pyResp.OCRResult,
 		"face_result":       pyResp.FaceResult,
 		"field_match":       pyResp.FieldMatch,
+		"score_breakdown":   pyResp.ScoreBreakdown,
 		"on_blockchain":     aiStatus == models.StatusVerified,
 		"pending_for_mine":  aiStatus == models.StatusVerified,
 		"timestamp":         pyResp.Timestamp,
@@ -2649,6 +2651,11 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		"ai_status":         pyResp.Status,
 		"kyc_status":        aiStatus,
 		"reason":            pyResp.Reason,
+		"ocr_result":        pyResp.OCRResult,
+		"face_result":       pyResp.FaceResult,
+		"field_match":       pyResp.FieldMatch,
+		"score_breakdown":   pyResp.ScoreBreakdown,
 		"on_blockchain":     aiStatus == models.StatusVerified,
+		"timestamp":         pyResp.Timestamp,
 	})
 }
