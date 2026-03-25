@@ -532,8 +532,14 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Resolve bankID: admin has no BankID, fall back to KYC's bank ──
+	bankID := user.BankID
+	if bankID == "" {
+		bankID = kyc.BankID
+	}
+
 	// This will create transaction and add to pending
-	err = h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
+	err = h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
@@ -2490,18 +2496,24 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	kyc.IDImagePath = fmt.Sprintf("uploads/%s/id_image.jpg", req.CustomerID)
 	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", req.CustomerID)
 
+	// ── Resolve bankID (same as ScanAndVerifyKYCFile) ──
+	bankID := user.BankID
+	if bankID == "" {
+		bankID = kyc.BankID
+	}
+
 	// Auto-update KYC status based on AI verdict
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
 		case models.StatusVerified:
-			if err := h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID); err != nil {
+			if err := h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID); err != nil {
 				SendBadRequest(w, err.Error())
 				return
 			}
 			kyc.Status = models.StatusVerified
 		case models.StatusRejected:
-			if err := h.blockchain.RejectKYC(req.CustomerID, user.BankID, user.ID, pyResp.Reason); err != nil {
+			if err := h.blockchain.RejectKYC(req.CustomerID, bankID, user.ID, pyResp.Reason); err != nil {
 				SendBadRequest(w, err.Error())
 				return
 			}
@@ -2621,36 +2633,42 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	kyc.IDImagePath = fmt.Sprintf("uploads/%s/id_image.jpg", customerID)
 	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", customerID)
 
+	// ── Resolve bankID for VerifyKYC ──
+	// Admin users may not have a BankID; fall back to the bank that created the KYC record.
+	bankID := user.BankID
+	if bankID == "" {
+		bankID = kyc.BankID // use the bank that originally created the KYC
+	}
+
 	aiStatus := mapPythonStatusToKYC(pyResp.Status)
 
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
 		case models.StatusVerified:
-			if err := h.blockchain.VerifyKYC(customerID, user.BankID, user.ID); err != nil {
+			if err := h.blockchain.VerifyKYC(customerID, bankID, user.ID); err != nil {
 				log.Printf("ERROR VerifyKYC %s: %v", customerID, err)
-				SendBadRequest(w, err.Error())
+				SendBadRequest(w, fmt.Sprintf("blockchain VerifyKYC failed: %v", err))
 				return
 			}
 			kyc.Status = models.StatusVerified
 		case models.StatusRejected:
-			if err := h.blockchain.RejectKYC(customerID, user.BankID, user.ID, pyResp.Reason); err != nil {
+			if err := h.blockchain.RejectKYC(customerID, bankID, user.ID, pyResp.Reason); err != nil {
 				log.Printf("ERROR RejectKYC %s: %v", customerID, err)
-				SendBadRequest(w, err.Error())
+				SendBadRequest(w, fmt.Sprintf("blockchain RejectKYC failed: %v", err))
 				return
 			}
 			kyc.Status = models.StatusRejected
 		}
 	}
 
-	log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
-	// if h.storage != nil {
-	// 	h.storage.SaveKYC(kyc)
-	// }
+	// log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
 	if h.storage != nil {
 		if err := h.storage.SaveKYC(kyc); err != nil {
 			log.Printf("ERROR SaveKYC %s: %v", customerID, err)
 		}
 	}
+
+	txCreated := kyc.Status == models.StatusVerified
 
 	SendSuccess(w, "KYC AI scan verification completed", map[string]interface{}{
 		"customer_id":       customerID,
@@ -2664,7 +2682,8 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		"face_result":       pyResp.FaceResult,
 		"field_match":       pyResp.FieldMatch,
 		"score_breakdown":   pyResp.ScoreBreakdown,
-		"on_blockchain":     aiStatus == models.StatusVerified,
+		"on_blockchain":     false,
+		"pending_for_mine":  txCreated,
 		"timestamp":         pyResp.Timestamp,
 	})
 }
