@@ -94,3 +94,10 @@ func SendPaginated(w http.ResponseWriter, data interface{}, page, perPage, total
 		TotalPages: totalPages,
 	})
 }
+
+// SendResponse sends a JSON response with a custom HTTP status code
+func SendResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(data)
+}

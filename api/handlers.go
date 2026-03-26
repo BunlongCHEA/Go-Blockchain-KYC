@@ -2483,6 +2483,23 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	resultBytes, _ := json.Marshal(rawResult)
 	_ = json.Unmarshal(resultBytes, &pyResp)
 
+	// ── OCR field completeness check ──
+	// If Python reports incomplete extraction, return retryable error
+	// Do NOT update KYC status — let the frontend retry with a better image
+	if pyResp.Status == "OCR_INCOMPLETE" {
+		SendResponse(w, http.StatusUnprocessableEntity, map[string]interface{}{
+			"success":         false,
+			"retryable":       true,
+			"message":         pyResp.Reason,
+			"customer_id":     req.CustomerID,
+			"ai_status":       pyResp.Status,
+			"ocr_result":      pyResp.OCRResult,
+			"score_breakdown": pyResp.ScoreBreakdown,
+			"instructions":    "Please re-capture the ID card with better lighting/angle and retry.",
+		})
+		return
+	}
+
 	// After parsing pyResp, populate scan fields onto kyc regardless of status
 	now := time.Now()
 	kyc.LastScanAt = &now
@@ -2537,6 +2554,8 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	hashInput := req.CustomerID + req.DocumentType + utils.FormatTimestamp(time.Now().Unix())
 	_ = hashInput // h.storage could store doc_hash here
 
+	txCreated := kyc.Status == models.StatusVerified
+
 	SendSuccess(w, "KYC AI scan verification completed", map[string]interface{}{
 		"customer_id":       req.CustomerID,
 		"document_verified": pyResp.DocumentVerified,
@@ -2549,8 +2568,8 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		"face_result":       pyResp.FaceResult,
 		"field_match":       pyResp.FieldMatch,
 		"score_breakdown":   pyResp.ScoreBreakdown,
-		"on_blockchain":     aiStatus == models.StatusVerified,
-		"pending_for_mine":  aiStatus == models.StatusVerified,
+		"on_blockchain":     false,     // aiStatus == models.StatusVerified,
+		"pending_for_mine":  txCreated, // aiStatus == models.StatusVerified,
 		"timestamp":         pyResp.Timestamp,
 	})
 }
@@ -2611,6 +2630,23 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	var pyResp PythonKYCVerifyResponse
 	resultBytes, _ := json.Marshal(rawResult)
 	_ = json.Unmarshal(resultBytes, &pyResp)
+
+	// ── OCR field completeness check ──
+	// If Python reports incomplete extraction, return retryable error
+	// Do NOT update KYC status — let the frontend retry with a better image
+	if pyResp.Status == "OCR_INCOMPLETE" {
+		SendResponse(w, http.StatusUnprocessableEntity, map[string]interface{}{
+			"success":         false,
+			"retryable":       true,
+			"message":         pyResp.Reason,
+			"customer_id":     customerID,
+			"ai_status":       pyResp.Status,
+			"ocr_result":      pyResp.OCRResult,
+			"score_breakdown": pyResp.ScoreBreakdown,
+			"instructions":    "Please re-capture the ID card with better lighting/angle and retry.",
+		})
+		return
+	}
 
 	kyc, err := h.blockchain.ReadKYC(customerID, false)
 	if err != nil {
