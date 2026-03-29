@@ -2153,10 +2153,28 @@ type UploadDocImageRequest struct {
 	DocumentType string `json:"document_type"` // national_id | passport
 }
 
-// UploadSelfieRequest accepts base64 selfie image linked to a customer
+// UploadSelfieRequest accepts base64 selfie + ID image for face comparison
 type UploadSelfieRequest struct {
 	CustomerID        string `json:"customer_id"`
 	SelfieImageBase64 string `json:"selfie_image_base64"`
+	IDImageBase64     string `json:"id_image_base64,omitempty"` // optional — if empty, read from KYC record
+}
+
+// PythonFaceComparePayload mirrors the Python /api/kyc/face/compare request
+type PythonFaceComparePayload struct {
+	IDImageBase64     string `json:"id_image_base64"`
+	SelfieImageBase64 string `json:"selfie_image_base64"`
+}
+
+// PythonFaceCompareResponse mirrors the Python FaceResult response
+type PythonFaceCompareResponse struct {
+	Verified        bool    `json:"verified"`
+	Distance        float64 `json:"distance"`
+	Threshold       float64 `json:"threshold"`
+	Model           string  `json:"model"`
+	SimilarityScore float64 `json:"similarity_score"`
+	Preprocessing   string  `json:"preprocessing"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // ScanAndVerifyRequest triggers full OCR + face + DB match pipeline
@@ -2390,7 +2408,12 @@ func (h *Handlers) UploadDocumentFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UploadSelfieImage stores/validates a selfie for later face comparison.
+// UploadSelfieImage accepts a selfie image, calls the Python face comparison
+// API against the ID card photo, and returns the face match result.
+//
+// The caller can provide id_image_base64 in the request body. If omitted,
+// the handler checks whether the KYC record already has an ID image path
+// (set by a previous /upload-doc call).
 //
 // POST /api/v1/kyc/upload-selfie
 func (h *Handlers) UploadSelfieImage(w http.ResponseWriter, r *http.Request) {
@@ -2411,22 +2434,71 @@ func (h *Handlers) UploadSelfieImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate KYC exists
-	if _, err := h.blockchain.ReadKYC(req.CustomerID, false); err != nil {
+	kyc, err := h.blockchain.ReadKYC(req.CustomerID, false)
+	if err != nil {
 		SendNotFound(w, "KYC record not found")
 		return
 	}
 
-	_ = user
-
-	// Optionally save selfie reference to DB for later comparison
-	if h.storage != nil {
-		_ = h.storage // hook: h.storage.SaveSelfieImage(req.CustomerID, req.SelfieImageBase64)
+	// Determine the ID image to compare against
+	idImageBase64 := req.IDImageBase64
+	if idImageBase64 == "" {
+		// No ID image in this request — check if KYC already has one from /upload-doc
+		if kyc.IDImagePath == "" {
+			SendBadRequest(w, "id_image_base64 is required (no previous ID image found for this customer). "+
+				"Either include id_image_base64 in the request or call POST /api/v1/kyc/upload-doc first.")
+			return
+		}
+		// ID image was uploaded previously but we don't have the base64 in memory.
+		// The caller must provide it explicitly for face comparison.
+		SendBadRequest(w, "id_image_base64 is required for face comparison. "+
+			"Please include the ID card image along with the selfie.")
+		return
 	}
 
-	SendSuccess(w, "Selfie uploaded successfully", map[string]interface{}{
-		"customer_id":  req.CustomerID,
-		"uploaded_at":  time.Now().UTC().Format(time.RFC3339),
-		"instructions": "Use POST /api/v1/kyc/scan-verify to run face comparison + OCR",
+	_ = user // available for audit logging
+
+	// ── Call Python face comparison API ──
+	payload := PythonFaceComparePayload{
+		IDImageBase64:     idImageBase64,
+		SelfieImageBase64: req.SelfieImageBase64,
+	}
+	rawResult, err := callPythonKYC("/api/kyc/face/compare", payload)
+	if err != nil {
+		SendInternalError(w, fmt.Sprintf("Face comparison service error: %v", err))
+		return
+	}
+
+	// Parse Python response
+	var faceResp PythonFaceCompareResponse
+	resultBytes, _ := json.Marshal(rawResult)
+	_ = json.Unmarshal(resultBytes, &faceResp)
+
+	// ── Update KYC record with selfie path ──
+	kyc.SelfieImagePath = fmt.Sprintf("uploads/%s/selfie_image.jpg", req.CustomerID)
+	now := time.Now()
+	kyc.LastScanAt = &now
+	kyc.UpdatedAt = now.Unix()
+
+	// Save updated KYC
+	if h.storage != nil {
+		h.storage.SaveKYC(kyc)
+	}
+
+	// ── Build response ──
+	SendSuccess(w, "Selfie uploaded and face comparison completed", map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"face_result": map[string]interface{}{
+			"verified":         faceResp.Verified,
+			"distance":         faceResp.Distance,
+			"threshold":        faceResp.Threshold,
+			"model":            faceResp.Model,
+			"similarity_score": faceResp.SimilarityScore,
+			"preprocessing":    faceResp.Preprocessing,
+			"error":            faceResp.Error,
+		},
+		"uploaded_at":  now.UTC().Format(time.RFC3339),
+		"instructions": "Face comparison done. Use POST /api/v1/kyc/scan-verify for full pipeline (OCR + face + DB match + scoring).",
 	})
 }
 
