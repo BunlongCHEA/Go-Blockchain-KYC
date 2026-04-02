@@ -58,7 +58,7 @@ func NewServer(
 // Start starts the HTTP server
 func (s *Server) Start() error {
 	// Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config)
 
 	// Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)

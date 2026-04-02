@@ -8,14 +8,15 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server       ServerConfig       `json:"server"`
-	Database     DatabaseConfig     `json:"database"`
-	JWT          JWTConfig          `json:"jwt"`
-	Crypto       CryptoConfig       `json:"crypto"`
-	Consensus    ConsensusConfig    `json:"consensus"`
-	Blockchain   BlockchainConfig   `json:"blockchain"`
-	Verification VerificationConfig `json:"verification"`
-	Monitoring   MonitoringConfig   `json:"monitoring"`
+	Server        ServerConfig        `json:"server"`
+	Database      DatabaseConfig      `json:"database"`
+	JWT           JWTConfig           `json:"jwt"`
+	Crypto        CryptoConfig        `json:"crypto"`
+	Consensus     ConsensusConfig     `json:"consensus"`
+	Blockchain    BlockchainConfig    `json:"blockchain"`
+	Verification  VerificationConfig  `json:"verification"`
+	Monitoring    MonitoringConfig    `json:"monitoring"`
+	PythonService PythonServiceConfig `json:"python_service"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -148,6 +149,42 @@ type MonitoringConfig struct {
 	LogLevel    string `json:"log_level"`
 }
 
+// PythonServiceConfig holds Python KYC AI service configuration
+type PythonServiceConfig struct {
+	URL              string `json:"url"`               // base URL, e.g. http://localhost:5001
+	TimeoutJSON      int    `json:"timeout_json"`      // seconds - for JSON body requests (face compare, scan)
+	TimeoutMultipart int    `json:"timeout_multipart"` // seconds - for multipart file upload requests
+}
+
+// GetTimeoutJSON returns the timeout for JSON requests as time.Duration
+func (p *PythonServiceConfig) GetTimeoutJSON() time.Duration {
+	if p.TimeoutJSON <= 0 {
+		return 300 * time.Second
+	}
+	return time.Duration(p.TimeoutJSON) * time.Second
+}
+
+// GetTimeoutMultipart returns the timeout for multipart requests as time.Duration
+func (p *PythonServiceConfig) GetTimeoutMultipart() time.Duration {
+	if p.TimeoutMultipart <= 0 {
+		return 600 * time.Second
+	}
+	return time.Duration(p.TimeoutMultipart) * time.Second
+}
+
+// GetURL returns the Python service URL, with env var override
+func (p *PythonServiceConfig) GetURL() string {
+	if envURL := os.Getenv("PYTHON_KYC_SERVICE_URL"); envURL != "" {
+		return envURL
+	}
+	if p.URL != "" {
+		return p.URL
+	}
+	return "http://localhost:5001"
+}
+
+// Returns the configured into default values if not set in the config file
+
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -155,7 +192,7 @@ func DefaultConfig() *Config {
 			Host:         "0.0.0.0",
 			Port:         8080,
 			ReadTimeout:  30,
-			WriteTimeout: 30,
+			WriteTimeout: 300,
 			IdleTimeout:  120,
 		},
 		Database: DatabaseConfig{
@@ -198,6 +235,11 @@ func DefaultConfig() *Config {
 			Enabled:     true,
 			MetricsPort: 9090,
 			LogLevel:    "info",
+		},
+		PythonService: PythonServiceConfig{
+			URL:              "http://localhost:5001",
+			TimeoutJSON:      300, // 5 minutes - face comparison on CPU
+			TimeoutMultipart: 600, // 10 minutes - full pipeline with file uploads
 		},
 	}
 }

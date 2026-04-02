@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"Go-Blockchain-KYC/auth"
+	"Go-Blockchain-KYC/config"
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/monitoring"
@@ -40,6 +41,7 @@ type Handlers struct {
 	verificationService *verification.VerificationService
 	monitoringService   *monitoring.MonitoringService
 	keyManager          *crypto.KeyManager
+	config              *config.Config
 }
 
 // IssueVerificationCertificateRequest represents request from external service
@@ -121,6 +123,7 @@ func NewHandlers(
 	verificationService *verification.VerificationService,
 	monitoringService *monitoring.MonitoringService,
 	keyManager *crypto.KeyManager,
+	cfg *config.Config,
 ) *Handlers {
 	return &Handlers{
 		blockchain:          blockchain,
@@ -130,6 +133,7 @@ func NewHandlers(
 		verificationService: verificationService,
 		monitoringService:   monitoringService,
 		keyManager:          keyManager,
+		config:              cfg,
 	}
 }
 
@@ -2174,6 +2178,7 @@ type PythonFaceCompareResponse struct {
 	Model           string  `json:"model"`
 	SimilarityScore float64 `json:"similarity_score"`
 	Preprocessing   string  `json:"preprocessing"`
+	Device          string  `json:"device"`
 	Error           string  `json:"error,omitempty"`
 }
 
@@ -2216,14 +2221,21 @@ type PythonKYCVerifyResponse struct {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func callPythonKYC(endpoint string, payload interface{}) (map[string]interface{}, error) {
+func (h *Handlers) callPythonKYC(endpoint string, payload interface{}) (map[string]interface{}, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	url := pythonKYCServiceURL() + endpoint
+	// client := &http.Client{Timeout: 6000 * time.Second}
+	// url := pythonKYCServiceURL() + endpoint
+
+	timeout := h.config.PythonService.GetTimeoutJSON()
+	client := &http.Client{Timeout: timeout}
+	url := h.config.PythonService.GetURL() + endpoint
+
+	log.Printf("[Python KYC] POST %s (timeout=%s)", url, timeout)
+
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("python KYC service unreachable: %w", err)
@@ -2243,7 +2255,7 @@ func callPythonKYC(endpoint string, payload interface{}) (map[string]interface{}
 }
 
 // callPythonKYCMultipart sends multipart/form-data with file fields
-func callPythonKYCMultipart(
+func (h *Handlers) callPythonKYCMultipart(
 	endpoint string,
 	fields map[string]string,
 	files map[string][]byte,
@@ -2263,8 +2275,15 @@ func callPythonKYCMultipart(
 	}
 	w.Close()
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	url := pythonKYCServiceURL() + endpoint
+	// client := &http.Client{Timeout: 120 * time.Second}
+	// url := pythonKYCServiceURL() + endpoint
+
+	timeout := h.config.PythonService.GetTimeoutMultipart()
+	client := &http.Client{Timeout: timeout}
+	url := h.config.PythonService.GetURL() + endpoint
+
+	log.Printf("[Python KYC] POST %s multipart (timeout=%s)", url, timeout)
+
 	req, _ := http.NewRequest(http.MethodPost, url, &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 
@@ -2342,7 +2361,7 @@ func (h *Handlers) UploadDocumentImage(w http.ResponseWriter, r *http.Request) {
 		ImageBase64:  req.ImageBase64,
 		DocumentType: req.DocumentType,
 	}
-	result, err := callPythonKYC("/api/kyc/scan", payload)
+	result, err := h.callPythonKYC("/api/kyc/scan", payload)
 	if err != nil {
 		SendInternalError(w, fmt.Sprintf("OCR service error: %v", err))
 		return
@@ -2390,7 +2409,7 @@ func (h *Handlers) UploadDocumentFile(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	data, _ := io.ReadAll(file)
 
-	result, err := callPythonKYCMultipart(
+	result, err := h.callPythonKYCMultipart(
 		"/api/kyc/scan/upload",
 		map[string]string{"document_type": documentType},
 		map[string][]byte{"file": data},
@@ -2463,7 +2482,7 @@ func (h *Handlers) UploadSelfieImage(w http.ResponseWriter, r *http.Request) {
 		IDImageBase64:     idImageBase64,
 		SelfieImageBase64: req.SelfieImageBase64,
 	}
-	rawResult, err := callPythonKYC("/api/kyc/face/compare", payload)
+	rawResult, err := h.callPythonKYC("/api/kyc/face/compare", payload)
 	if err != nil {
 		SendInternalError(w, fmt.Sprintf("Face comparison service error: %v", err))
 		return
@@ -2495,6 +2514,7 @@ func (h *Handlers) UploadSelfieImage(w http.ResponseWriter, r *http.Request) {
 			"model":            faceResp.Model,
 			"similarity_score": faceResp.SimilarityScore,
 			"preprocessing":    faceResp.Preprocessing,
+			"device":           faceResp.Device,
 			"error":            faceResp.Error,
 		},
 		"uploaded_at":  now.UTC().Format(time.RFC3339),
@@ -2544,7 +2564,7 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		SelfieImageBase64: req.SelfieImageBase64,
 		DocumentType:      req.DocumentType,
 	}
-	rawResult, err := callPythonKYC("/api/kyc/verify", payload)
+	rawResult, err := h.callPythonKYC("/api/kyc/verify", payload)
 	if err != nil {
 		SendInternalError(w, fmt.Sprintf("KYC AI service error: %v", err))
 		return
@@ -2692,7 +2712,7 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		files["selfie_image"] = selfieData
 	}
 
-	rawResult, err := callPythonKYCMultipart("/api/kyc/verify/upload", formFields, files)
+	rawResult, err := h.callPythonKYCMultipart("/api/kyc/verify/upload", formFields, files)
 	if err != nil {
 		SendInternalError(w, fmt.Sprintf("KYC AI service error: %v", err))
 		return

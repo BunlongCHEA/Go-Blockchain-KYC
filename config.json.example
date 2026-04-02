@@ -34,11 +34,14 @@
     "encryption_key": "your-32-byte-secret-key-here123"
   },
   "consensus":  {
-    "type": "pbft",
+    "type": "raft",
+    "namespace": "",
     "node_id": "node1",
     "nodes": ["node1", "node2", "node3", "node4"],
-    "election_timeout": 1000,   #milliseconds
-    "heartbeat_interval": 150   #milliseconds
+    "discovery_method": "static",
+    "headless_service": "kyc-blockchain-headless",
+    "election_timeout": 1000,
+    "heartbeat_interval": 150
   },
   "blockchain": {
     "difficulty": 2,
@@ -54,5 +57,15 @@
     "didit_client_secret": "your_didit_client_secret",
     "onfido_api_key": "your_onfido_api_key",
     "trulioo_api_key":  "your_trulioo_api_key"
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics_port": 9090,
+    "log_level": "info"
+  },
+  "python_service": {
+    "url": "http://localhost:5001",
+    "timeout_json": 300,
+    "timeout_multipart": 600
   }
 }
