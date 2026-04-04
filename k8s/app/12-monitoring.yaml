@@ -47,7 +47,7 @@ spec:
 #   This ServiceMonitor tells Prometheus to scrape it.
 #
 # REQUIREMENTS:
-#   1. postgres-exporter must be deployed (see 13-postgres-exporter.yaml)
+#   1. postgres-exporter must be deployed (see 03-postgres.yaml)
 #   2. A Service exposing port 9187 named "pg-metrics" must exist
 #   3. NetworkPolicy must allow Prometheus to reach postgres-exporter
 # ============================================================

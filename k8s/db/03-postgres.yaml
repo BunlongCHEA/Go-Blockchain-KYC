@@ -112,6 +112,7 @@ metadata:
     app: postgres
     app.kubernetes.io/name: postgres
 type: Opaque
+# data must be base64 encoded, but stringData allows us to input plain text and it will handle encoding automatically.
 data:
   # postgres (base64 encoded)
   POSTGRES_USER: cG9zdGdyZXM=

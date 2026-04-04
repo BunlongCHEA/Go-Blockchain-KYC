@@ -89,6 +89,10 @@ spec:
                   key: POSTGRES_DB
             - name: DB_SSLMODE
               value: "disable"
+
+            # Python KYC API endpoint (from ConfigMap — not sensitive)
+            - name: PYTHON_KYC_API_URL
+              value: "https://kyc-python-api.bunlong.uk"
             
             # JWT secret from secret
             - name: JWT_SECRET

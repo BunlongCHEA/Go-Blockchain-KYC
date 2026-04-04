@@ -6,6 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: kyc-blockchain
 data:
+  # "password": "strongpassword123",
   config.json: |
     {
       "server": {
@@ -19,7 +20,6 @@ data:
         "host": "postgres-service",
         "port": 5432,
         "user": "postgres",
-        "password": "strongpassword123",
         "dbname": "kyc_blockchain",
         "sslmode": "disable",
         "max_open_conns": 25,
@@ -60,6 +60,11 @@ data:
         "enabled": true,
         "metrics_port": 9090,
         "log_level": "info"
+      },
+      "python_service": {
+        "url": "https://kyc-python-api.bunlong.uk",
+        "timeout_json": 6000,
+        "timeout_multipart": 6000
       }
     }
 
