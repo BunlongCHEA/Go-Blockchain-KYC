@@ -77,7 +77,9 @@ var RolePermissions = map[Role][]Permission{
 		PermAuditRead, PermAuditExport,
 	},
 	RoleCustomer: {
-		PermKYCRead, // Only their own KYC
+		PermKYCRead,   // Only their own KYC
+		PermKYCCreate, // To submit KYC
+		PermKYCVerify, // To check KYC status
 	},
 }
 
