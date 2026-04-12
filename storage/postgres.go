@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"Go-Blockchain-KYC/auth"
 	"Go-Blockchain-KYC/models"
 
 	_ "github.com/lib/pq"
@@ -998,6 +999,8 @@ func (p *PostgresStorage) GetAuditLogsByUser(userID string, limit int) ([]*model
 	return p.GetAuditLogs(userID, "", time.Now().AddDate(0, 0, -30), time.Now(), limit)
 }
 
+// ==================== User Operations ====================
+
 // BlockUser blocks a user account
 func (p *PostgresStorage) BlockUser(userID, reason string) error {
 	query := `UPDATE users SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
@@ -1035,6 +1038,179 @@ func (p *PostgresStorage) UnblockUser(userID string) error {
 	}
 
 	return err
+}
+
+// SaveUser inserts or updates a user in the database.
+// Uses ON CONFLICT (id) DO UPDATE so it is safe to call on restart
+// (admin already exists → updates fields instead of erroring).
+func (p *PostgresStorage) SaveUser(user *auth.User) error {
+	query := `
+		INSERT INTO users (
+			id,
+			username,
+			email,
+			password_hash,
+			password_salt,
+			role,
+			bank_id,
+			is_active,
+			password_change_required,
+			login_count,
+			created_at,
+			updated_at,
+			last_login
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		)
+		ON CONFLICT (id) DO UPDATE SET
+			email                    = EXCLUDED.email,
+			password_hash            = EXCLUDED.password_hash,
+			password_salt            = EXCLUDED.password_salt,
+			role                     = EXCLUDED.role,
+			bank_id                  = EXCLUDED.bank_id,
+			is_active                = EXCLUDED.is_active,
+			password_change_required = EXCLUDED.password_change_required,
+			login_count              = EXCLUDED.login_count,
+			updated_at               = EXCLUDED.updated_at,
+			last_login               = EXCLUDED.last_login
+	`
+
+	// last_login: use NULL if zero value
+	var lastLogin *time.Time
+	if !user.LastLogin.IsZero() {
+		lastLogin = &user.LastLogin
+	}
+
+	_, err := p.db.Exec(query,
+		user.ID,
+		user.Username,
+		user.Email,
+		user.PasswordHash,
+		user.PasswordSalt,
+		string(user.Role),
+		nullableString(user.BankID),
+		user.IsActive,
+		user.PasswordChangeRequired,
+		user.LoginCount,
+		user.CreatedAt,
+		user.UpdatedAt,
+		lastLogin,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save user: %w", err)
+	}
+	return nil
+}
+
+// GetUserByUsername retrieves a user from the database by username.
+// Used on Go server startup to reload persisted users (e.g. admin) into
+// the in-memory AuthService map so login works across restarts.
+func (p *PostgresStorage) GetUserByUsername(username string) (*auth.User, error) {
+	query := `
+		SELECT
+			id,
+			username,
+			email,
+			password_hash,
+			password_salt,
+			role,
+			COALESCE(bank_id, ''),
+			is_active,
+			COALESCE(password_change_required, TRUE),
+			COALESCE(login_count, 0),
+			created_at,
+			updated_at,
+			COALESCE(last_login, '0001-01-01 00:00:00')
+		FROM users
+		WHERE username = $1
+	`
+
+	user := &auth.User{}
+	var role string
+	var lastLogin time.Time
+
+	err := p.db.QueryRow(query, username).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&user.PasswordSalt,
+		&role,
+		&user.BankID,
+		&user.IsActive,
+		&user.PasswordChangeRequired,
+		&user.LoginCount,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&lastLogin,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found: %s", username)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	user.Role = auth.Role(role)
+	if !lastLogin.IsZero() && lastLogin.Year() > 1 {
+		user.LastLogin = lastLogin
+	}
+
+	return user, nil
+}
+
+// GetAllUsers retrieves all users from the database
+func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
+	query := `
+		SELECT
+			id, username, email, password_hash, password_salt, role,
+			COALESCE(bank_id, ''), is_active,
+			COALESCE(password_change_required, TRUE),
+			COALESCE(login_count, 0),
+			created_at, updated_at,
+			COALESCE(last_login, '0001-01-01 00:00:00')
+		FROM users
+		WHERE is_active = TRUE
+		ORDER BY created_at ASC
+	`
+
+	rows, err := p.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*auth.User
+	for rows.Next() {
+		user := &auth.User{}
+		var role string
+		var lastLogin time.Time
+
+		err := rows.Scan(
+			&user.ID, &user.Username, &user.Email,
+			&user.PasswordHash, &user.PasswordSalt, &role,
+			&user.BankID, &user.IsActive,
+			&user.PasswordChangeRequired, &user.LoginCount,
+			&user.CreatedAt, &user.UpdatedAt, &lastLogin,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		user.Role = auth.Role(role)
+		if !lastLogin.IsZero() && lastLogin.Year() > 1 {
+			user.LastLogin = lastLogin
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+// nullableString returns nil for empty string (maps to SQL NULL for bank_id FK)
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // ==================== Recovery Operations ====================

@@ -108,20 +108,15 @@ func main() {
 
 	// Setup demo data
 	log.Println("\n9. Setting Up Demo Data...")
-	// setupDemoData(blockchain, authService, keyManager)
-
-	// if !blockchain.HasData() {
-	// 	setupDemoDataBank(blockchain, store)
-	// } else {
-	// 	log.Println("   ✓ Skipping demo banking data setup - existing data recovered")
-	// }
-
 	setupDemoData(blockchain, authService, keyManager, store)
-	// if !blockchain.HasData() {
-	// 	setupDemoData(blockchain, authService, keyManager, store)
-	// } else {
-	// 	log.Println("   ✓ Skipping demo data setup - existing data recovered")
-	// }
+
+	// Reload persisted users from DB into in-memory AuthService
+	log.Println("\n10. Reloading persisted users from database...")
+	if store != nil {
+		if err := reloadUsersFromDB(store, authService); err != nil {
+			log.Printf("   ⚠ Could not reload users: %v", err)
+		}
+	}
 
 	// Start API server
 	log.Println("\n7. Starting REST API Server...")
@@ -495,44 +490,6 @@ func recoverBlockchainFromStorage(blockchain *models.Blockchain, store storage.S
 	return nil
 }
 
-// // setupDemoData creates demo banks
-// func setupDemoDataBank(blockchain *models.Blockchain, store storage.Storage) {
-// 	// Register demo banks
-// 	bank1 := models.NewBank("BANK00000001", "First National Bank", "FNB", "USA", "LIC-001", "")
-// 	bank1.Address = models.Address{
-// 		Street:     "123 Financial District",
-// 		City:       "New York",
-// 		State:      "NY",
-// 		PostalCode: "10001",
-// 		Country:    "USA",
-// 	}
-// 	bank1.ContactEmail = "contact@fnb.com"
-// 	blockchain.RegisterBank(bank1)
-
-// 	// Save to database if available
-// 	if store != nil {
-// 		store.SaveBank(bank1)
-// 	}
-
-// 	bank2 := models.NewBank("BANK00000002", "Global Trust Bank", "GTB", "USA", "LIC-002", "")
-// 	bank2.Address = models.Address{
-// 		Street:     "456 Banking Avenue",
-// 		City:       "Los Angeles",
-// 		State:      "CA",
-// 		PostalCode: "90001",
-// 		Country:    "USA",
-// 	}
-// 	bank2.ContactEmail = "contact@gtb.com"
-// 	blockchain.RegisterBank(bank2)
-
-// 	// Save to database if available
-// 	if store != nil {
-// 		store.SaveBank(bank2)
-// 	}
-
-// 	log.Println("   ✓ Demo banks registered")
-// }
-
 // setupDemoData creates demo banks and users
 func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService, keyManager *crypto.KeyManager, store storage.Storage) {
 	// func setupDemoData(authService *auth.AuthService, keyManager *crypto.KeyManager) {
@@ -540,15 +497,15 @@ func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService,
 	// Only register banks if no data exists
 	if !blockchain.HasData() {
 		// Register demo banks
-		bank1 := models.NewBank("BANK00000001", "First National Bank", "FNB", "USA", "LIC-001", "")
+		bank1 := models.NewBank("BANK00000001", "National Bank of Cambodia", "NBC", "Cambodia", "Main-Issuer", "")
 		bank1.Address = models.Address{
-			Street:     "123 Financial District",
-			City:       "New York",
-			State:      "NY",
-			PostalCode: "10001",
-			Country:    "USA",
+			Street:     "88 Street 102 Corner Street 19, Sangkat Wat Phnom, Khan Daun Penh",
+			City:       "Phnom Penh",
+			State:      "Phnom Penh",
+			PostalCode: "12000",
+			Country:    "Cambodia",
 		}
-		bank1.ContactEmail = "contact@fnb.com"
+		bank1.ContactEmail = "info@nbc.gov.kh"
 		blockchain.RegisterBank(bank1)
 
 		// Save to database if available
@@ -556,15 +513,15 @@ func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService,
 			store.SaveBank(bank1)
 		}
 
-		bank2 := models.NewBank("BANK00000002", "Global Trust Bank", "GTB", "USA", "LIC-002", "")
+		bank2 := models.NewBank("BANK00000002", "Advanced Bank of Asia Limited", "ABA", "Cambodia", "C.B.14", "")
 		bank2.Address = models.Address{
-			Street:     "456 Banking Avenue",
-			City:       "Los Angeles",
-			State:      "CA",
-			PostalCode: "90001",
-			Country:    "USA",
+			Street:     "148, Preah Sihanouk Blvd.",
+			City:       "Phnom Penh",
+			State:      "Phnom Penh",
+			PostalCode: "120102",
+			Country:    "Cambodia",
 		}
-		bank2.ContactEmail = "contact@gtb.com"
+		bank2.ContactEmail = "info@ababank.com"
 		blockchain.RegisterBank(bank2)
 
 		// Save to database if available
@@ -577,49 +534,105 @@ func setupDemoData(blockchain *models.Blockchain, authService *auth.AuthService,
 		log.Println("   ✓ Skipping bank registration - existing data recovered")
 	}
 
-	// Register demo users
-	adminUser := &auth.RegisterRequest{
+	// ── Admin user: register in-memory (always needed) ──────────────────────
+	adminReq := &auth.RegisterRequest{
 		Username: "admin",
 		Email:    "admin@kyc-blockchain.com",
 		Password: "admin123",
 		Role:     auth.RoleAdmin,
 	}
-	authService.Register(adminUser)
 
-	bankAdmin := &auth.RegisterRequest{
-		Username: "bank_admin",
-		Email:    "admin@fnb.com",
-		Password: "bank123",
-		Role:     auth.RoleBankAdmin,
-		BankID:   "BANK00000001",
-	}
-	authService.Register(bankAdmin)
+	adminUser, err := authService.Register(adminReq)
+	adminUser.PasswordChangeRequired = true // force change on first login
+	adminUser.LoginCount = 0
 
-	bankOfficer := &auth.RegisterRequest{
-		Username: "bank_officer",
-		Email:    "officer@fnb.com",
-		Password: "officer123",
-		Role:     auth.RoleBankOfficer,
-		BankID:   "BANK00000001",
+	if err != nil {
+		// Already exists in memory (e.g. called twice) — that's fine
+		log.Printf("   ℹ Admin user: %v", err)
+	} else {
+		// ── Save admin to DB so it survives restart ──────────────────
+		if store != nil {
+			if dbErr := store.SaveUser(adminUser); dbErr != nil {
+				log.Printf("   ⚠ Could not persist admin to DB: %v", dbErr)
+			} else {
+				log.Println("   ✓ Admin user persisted to PostgreSQL")
+			}
+		}
 	}
-	authService.Register(bankOfficer)
 
-	auditor := &auth.RegisterRequest{
-		Username: "auditor",
-		Email:    "auditor@kyc-blockchain.com",
-		Password: "auditor123",
-		Role:     auth.RoleAuditor,
-	}
-	authService.Register(auditor)
+	// // Register demo users
+	// adminUser := &auth.RegisterRequest{
+	// 	Username: "admin",
+	// 	Email:    "admin@kyc-blockchain.com",
+	// 	Password: "admin123",
+	// 	Role:     auth.RoleAdmin,
+	// }
+	// authService.Register(adminUser)
+
+	// bankAdmin := &auth.RegisterRequest{
+	// 	Username: "bank_admin",
+	// 	Email:    "admin@fnb.com",
+	// 	Password: "bank123",
+	// 	Role:     auth.RoleBankAdmin,
+	// 	BankID:   "BANK00000001",
+	// }
+	// authService.Register(bankAdmin)
+
+	// bankOfficer := &auth.RegisterRequest{
+	// 	Username: "bank_officer",
+	// 	Email:    "officer@fnb.com",
+	// 	Password: "officer123",
+	// 	Role:     auth.RoleBankOfficer,
+	// 	BankID:   "BANK00000001",
+	// }
+	// authService.Register(bankOfficer)
+
+	// auditor := &auth.RegisterRequest{
+	// 	Username: "auditor",
+	// 	Email:    "auditor@kyc-blockchain.com",
+	// 	Password: "auditor123",
+	// 	Role:     auth.RoleAuditor,
+	// }
+	// authService.Register(auditor)
 
 	log.Println("   ✓ Demo users created")
 	log.Println()
 	log.Println("   Demo Credentials:")
 	log.Println("   -----------------")
-	log.Println("   Admin:        admin / admin123")
-	log.Println("   Bank Admin:   bank_admin / bank123")
-	log.Println("   Bank Officer: bank_officer / officer123")
-	log.Println("   Auditor:      auditor / auditor123")
+	log.Println("   Admin:        admin / admin123 (change password on first login)")
+	// log.Println("   Bank Admin:   bank_admin / bank123")
+	// log.Println("   Bank Officer: bank_officer / officer123")
+	// log.Println("   Auditor:      auditor / auditor123")
+}
+
+// reloadUsersFromDB loads all persisted users from DB into the in-memory AuthService.
+// This is called on every startup so login works after a restart.
+func reloadUsersFromDB(store storage.Storage, authService *auth.AuthService) error {
+	usernames := []string{"admin"} // extend this list as you create more users via UI
+
+	// Better: load ALL users from DB
+	users, err := store.GetAllUsers()
+	if err != nil {
+		// Fallback: load known usernames one by one
+		log.Printf("   ⚠ GetAllUsers not available, loading known users individually")
+		for _, username := range usernames {
+			user, err := store.GetUserByUsername(username)
+			if err != nil {
+				log.Printf("   ⚠ Could not load user '%s': %v", username, err)
+				continue
+			}
+			authService.LoadUser(user)
+			log.Printf("   ✓ Reloaded user: %s (%s)", user.Username, user.Role)
+		}
+		return nil
+	}
+
+	for _, user := range users {
+		authService.LoadUser(user)
+		log.Printf("   ✓ Reloaded user: %s (%s)", user.Username, user.Role)
+	}
+	log.Printf("   ✓ %d user(s) reloaded from database", len(users))
+	return nil
 }
 
 // handleGracefulShutdown handles graceful shutdown on SIGINT/SIGTERM

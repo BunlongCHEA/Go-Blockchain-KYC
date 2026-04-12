@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"Go-Blockchain-KYC/auth"
 	"Go-Blockchain-KYC/models"
 	"time"
 )
@@ -47,6 +48,9 @@ type Storage interface {
 	// User operations
 	BlockUser(userID, reason string) error
 	UnblockUser(userID string) error
+	SaveUser(user *auth.User) error
+	GetUserByUsername(username string) (*auth.User, error)
+	GetAllUsers() ([]*auth.User, error)
 
 	// Recovery operations
 	LoadRecoveryData() (*models.RecoveryData, error)

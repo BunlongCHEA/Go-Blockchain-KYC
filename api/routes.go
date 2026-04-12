@@ -31,6 +31,10 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// mux.Handle("POST /api/v1/auth/refresh",
 	// 	middleware.Authenticate(http.HandlerFunc(handlers.RefreshToken)))
 
+	// Public — needed by customer registration form to populate bank dropdown
+	mux.HandleFunc("GET /api/v1/banks/list",
+		http.HandlerFunc(handlers.ListBanks))
+
 	// ==================== Protected Routes ====================
 
 	// Profile
@@ -105,10 +109,10 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermBankRead)(
 				http.HandlerFunc(handlers.GetBank))))
 
-	mux.Handle("GET /api/v1/banks/list",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermBankRead)(
-				http.HandlerFunc(handlers.ListBanks))))
+	// mux.Handle("GET /api/v1/banks/list",
+	// 	middleware.Authenticate(
+	// 		middleware.RequirePermission(auth.PermBankRead)(
+	// 			http.HandlerFunc(handlers.ListBanks))))
 
 	// Blockchain Routes
 	mux.Handle("GET /api/v1/blockchain/stats",

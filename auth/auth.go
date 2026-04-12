@@ -10,17 +10,19 @@ import (
 
 // User represents an authenticated user
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	PasswordSalt string    `json:"-"`
-	Role         Role      `json:"role"`
-	BankID       string    `json:"bank_id,omitempty"`
-	IsActive     bool      `json:"is_active"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	LastLogin    time.Time `json:"last_login,omitempty"`
+	ID                     string    `json:"id"`
+	Username               string    `json:"username"`
+	Email                  string    `json:"email"`
+	PasswordHash           string    `json:"-"`
+	PasswordSalt           string    `json:"-"`
+	Role                   Role      `json:"role"`
+	BankID                 string    `json:"bank_id,omitempty"`
+	IsActive               bool      `json:"is_active"`
+	PasswordChangeRequired bool      `json:"password_change_required"`
+	LoginCount             int       `json:"login_count"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+	LastLogin              time.Time `json:"last_login,omitempty"`
 }
 
 // AuthService handles authentication operations
@@ -146,6 +148,7 @@ func (a *AuthService) Login(req *LoginRequest) (*LoginResponse, error) {
 
 	// Update last login
 	user.LastLogin = time.Now()
+	user.LoginCount++
 
 	return &LoginResponse{
 		AccessToken:  accessToken,
@@ -252,6 +255,7 @@ func (a *AuthService) UpdatePassword(userID, oldPassword, newPassword string) er
 	user.PasswordHash = crypto.HashPassword(newPassword, salt)
 	user.PasswordSalt = salt
 	user.UpdatedAt = time.Now()
+	user.PasswordChangeRequired = false
 
 	return nil
 }
@@ -270,6 +274,15 @@ func (a *AuthService) DeactivateUser(userID string) error {
 	user.UpdatedAt = time.Now()
 
 	return nil
+}
+
+// LoadUser injects a pre-built User (e.g. loaded from DB) directly into the
+// in-memory maps. Used on startup to restore persisted users.
+func (a *AuthService) LoadUser(user *User) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.users[user.Username] = user
+	a.usersByID[user.ID] = user
 }
 
 // Helper function to generate user ID
