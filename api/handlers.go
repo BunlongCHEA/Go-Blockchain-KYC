@@ -216,6 +216,115 @@ func (h *Handlers) GetProfile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ChangePassword handles password change for authenticated users.
+// After a successful change, clears password_change_required flag
+// and persists the updated user to the database.
+func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	if req.OldPassword == "" {
+		SendBadRequest(w, "old_password is required")
+		return
+	}
+	if req.NewPassword == "" {
+		SendBadRequest(w, "new_password is required")
+		return
+	}
+
+	// Enforce password policy:
+	// minimum 15 characters, 1 uppercase, 1 number, 1 special character
+	if err := validatePasswordPolicy(req.NewPassword); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// Update password in-memory (also clears PasswordChangeRequired flag)
+	if err := h.authService.UpdatePassword(user.ID, req.OldPassword, req.NewPassword); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// Persist updated user (new hash + salt + flag cleared) to DB
+	if h.storage != nil {
+		updatedUser, err := h.authService.GetUserByID(user.ID)
+		if err == nil {
+			if dbErr := h.storage.SaveUser(updatedUser); dbErr != nil {
+				log.Printf("[ChangePassword] Warning: could not persist user to DB: %v", dbErr)
+			}
+		}
+	}
+
+	// Audit log
+	if h.storage != nil {
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       user.ID,
+			Action:       "PASSWORD_CHANGED",
+			ResourceType: "USER",
+			ResourceID:   user.ID,
+			Details: map[string]interface{}{
+				"username": user.Username,
+				"role":     user.Role,
+			},
+			IPAddress: getClientIP(r),
+			CreatedAt: time.Now(),
+		})
+	}
+
+	SendSuccess(w, "Password changed successfully", map[string]interface{}{
+		"username":                 user.Username,
+		"password_change_required": false,
+	})
+}
+
+// validatePasswordPolicy enforces:
+// - minimum 15 characters
+// - at least 1 uppercase letter
+// - at least 1 number
+// - at least 1 special character
+func validatePasswordPolicy(password string) error {
+	if len(password) < 15 {
+		return fmt.Errorf("password must be at least 15 characters")
+	}
+
+	var hasUpper, hasNumber, hasSpecial bool
+	for _, c := range password {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= '0' && c <= '9':
+			hasNumber = true
+		case !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')):
+			hasSpecial = true
+		}
+	}
+
+	if !hasUpper {
+		return fmt.Errorf("password must contain at least 1 uppercase letter")
+	}
+	if !hasNumber {
+		return fmt.Errorf("password must contain at least 1 number")
+	}
+	if !hasSpecial {
+		return fmt.Errorf("password must contain at least 1 special character")
+	}
+
+	return nil
+}
+
 // =========== Auto-Verify KYC Handlers =================
 
 // Auto-verify KYC using external API
@@ -2814,4 +2923,283 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		"pending_for_mine":  txCreated,
 		"timestamp":         pyResp.Timestamp,
 	})
+}
+
+// ==================== User Management Handlers ====================
+
+// ListUsers returns all non-deleted users (admin only)
+func (h *Handlers) ListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.storage.GetAllUsers()
+	if err != nil {
+		SendInternalError(w, "failed to list users: "+err.Error())
+		return
+	}
+
+	// Strip sensitive fields before sending
+	type SafeUser struct {
+		ID                     string    `json:"id"`
+		Username               string    `json:"username"`
+		Email                  string    `json:"email"`
+		Role                   string    `json:"role"`
+		BankID                 string    `json:"bank_id,omitempty"`
+		IsActive               bool      `json:"is_active"`
+		IsDeleted              bool      `json:"is_deleted"`
+		PasswordChangeRequired bool      `json:"password_change_required"`
+		LoginCount             int       `json:"login_count"`
+		CreatedAt              time.Time `json:"created_at"`
+		UpdatedAt              time.Time `json:"updated_at"`
+		LastLogin              time.Time `json:"last_login,omitempty"`
+	}
+
+	result := make([]SafeUser, 0, len(users))
+	for _, u := range users {
+		result = append(result, SafeUser{
+			ID:                     u.ID,
+			Username:               u.Username,
+			Email:                  u.Email,
+			Role:                   string(u.Role),
+			BankID:                 u.BankID,
+			IsActive:               u.IsActive,
+			IsDeleted:              u.IsDeleted,
+			PasswordChangeRequired: u.PasswordChangeRequired,
+			LoginCount:             u.LoginCount,
+			CreatedAt:              u.CreatedAt,
+			UpdatedAt:              u.UpdatedAt,
+			LastLogin:              u.LastLogin,
+		})
+	}
+	SendSuccess(w, "", map[string]interface{}{
+		"users": result,
+		"count": len(result),
+	})
+}
+
+// CreateUser creates a new internal user (bank_admin, bank_officer, auditor)
+func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+		BankID   string `json:"bank_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.Username == "" || req.Email == "" || req.Password == "" || req.Role == "" {
+		SendBadRequest(w, "username, email, password, and role are required")
+		return
+	}
+
+	// Disallow creating customer or another admin via this endpoint
+	allowedRoles := map[string]bool{
+		"bank_admin": true, "bank_officer": true, "auditor": true,
+	}
+	if !allowedRoles[req.Role] {
+		SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor")
+		return
+	}
+
+	// Validate bank assignment for bank roles
+	if (req.Role == "bank_admin" || req.Role == "bank_officer") && req.BankID == "" {
+		SendBadRequest(w, "bank_id is required for bank_admin and bank_officer roles")
+		return
+	}
+
+	user, err := h.authService.Register(&auth.RegisterRequest{
+		Username: req.Username,
+		Email:    req.Email,
+		Password: req.Password,
+		Role:     auth.Role(req.Role),
+		BankID:   req.BankID,
+	})
+	if err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// New internal users must change password on first login
+	user.PasswordChangeRequired = true
+
+	if h.storage != nil {
+		if err := h.storage.SaveUser(user); err != nil {
+			SendInternalError(w, "failed to persist user: "+err.Error())
+			return
+		}
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       getUserIDFromContext(r),
+			Action:       "USER_CREATED",
+			ResourceType: "USER",
+			ResourceID:   user.ID,
+			Details: map[string]interface{}{
+				"username": user.Username,
+				"role":     user.Role,
+				"bank_id":  user.BankID,
+			},
+			IPAddress: getClientIP(r),
+			CreatedAt: time.Now(),
+		})
+	}
+
+	SendCreated(w, "user created successfully", map[string]interface{}{
+		"id":       user.ID,
+		"username": user.Username,
+		"email":    user.Email,
+		"role":     user.Role,
+		"bank_id":  user.BankID,
+	})
+}
+
+// UpdateUser updates role, is_active for a user
+func (h *Handlers) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID   string `json:"user_id"`
+		IsActive *bool  `json:"is_active,omitempty"`
+		Role     string `json:"role,omitempty"`
+		BankID   string `json:"bank_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.UserID == "" {
+		SendBadRequest(w, "user_id is required")
+		return
+	}
+
+	user, err := h.authService.GetUserByID(req.UserID)
+	if err != nil {
+		SendNotFound(w, "user not found")
+		return
+	}
+
+	// Prevent modifying the root admin
+	if user.Username == "admin" && req.Role != "" && req.Role != "admin" {
+		SendForbidden(w, "cannot change role of root admin")
+		return
+	}
+
+	if req.IsActive != nil {
+		user.IsActive = *req.IsActive
+	}
+	if req.Role != "" {
+		user.Role = auth.Role(req.Role)
+	}
+	if req.BankID != "" {
+		user.BankID = req.BankID
+	}
+	user.UpdatedAt = time.Now()
+
+	if h.storage != nil {
+		h.storage.SaveUser(user)
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       getUserIDFromContext(r),
+			Action:       "USER_UPDATED",
+			ResourceType: "USER",
+			ResourceID:   req.UserID,
+			Details: map[string]interface{}{
+				"is_active": req.IsActive,
+				"role":      req.Role,
+			},
+			IPAddress: getClientIP(r),
+			CreatedAt: time.Now(),
+		})
+	}
+
+	SendSuccess(w, "user updated successfully", nil)
+}
+
+// DeleteUser soft-deletes a user (sets is_deleted=true, is_active=false)
+func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.UserID == "" {
+		SendBadRequest(w, "user_id is required")
+		return
+	}
+
+	user, err := h.authService.GetUserByID(req.UserID)
+	if err != nil {
+		SendNotFound(w, "user not found")
+		return
+	}
+	if user.Username == "admin" {
+		SendForbidden(w, "cannot delete root admin")
+		return
+	}
+
+	user.IsActive = false
+	user.IsDeleted = true
+	user.UpdatedAt = time.Now()
+
+	if h.storage != nil {
+		h.storage.SaveUser(user)
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       getUserIDFromContext(r),
+			Action:       "USER_DELETED",
+			ResourceType: "USER",
+			ResourceID:   req.UserID,
+			Details:      map[string]interface{}{"username": user.Username},
+			IPAddress:    getClientIP(r),
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	SendSuccess(w, "user deleted successfully", nil)
+}
+
+// ResetUserPassword resets a user's password to a temp value + forces change
+func (h *Handlers) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.UserID == "" {
+		SendBadRequest(w, "user_id is required")
+		return
+	}
+
+	tempPassword, err := h.authService.ResetPassword(req.UserID)
+	if err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	user, _ := h.authService.GetUserByID(req.UserID)
+	if h.storage != nil && user != nil {
+		h.storage.SaveUser(user)
+		h.storage.SaveAuditLog(&models.AuditLog{
+			UserID:       getUserIDFromContext(r),
+			Action:       "USER_PASSWORD_RESET",
+			ResourceType: "USER",
+			ResourceID:   req.UserID,
+			Details:      map[string]interface{}{"username": user.Username},
+			IPAddress:    getClientIP(r),
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	SendSuccess(w, "password reset successfully", map[string]interface{}{
+		"temp_password":            tempPassword,
+		"password_change_required": true,
+		"message":                  "Share this temporary password securely with the user. They must change it on next login.",
+	})
+}
+
+// getUserIDFromContext is a helper for audit logs in handlers
+func getUserIDFromContext(r *http.Request) string {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		return "system"
+	}
+	return user.ID
 }

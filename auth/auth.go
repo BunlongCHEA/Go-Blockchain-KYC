@@ -18,6 +18,7 @@ type User struct {
 	Role                   Role      `json:"role"`
 	BankID                 string    `json:"bank_id,omitempty"`
 	IsActive               bool      `json:"is_active"`
+	IsDeleted              bool      `json:"is_deleted"`
 	PasswordChangeRequired bool      `json:"password_change_required"`
 	LoginCount             int       `json:"login_count"`
 	CreatedAt              time.Time `json:"created_at"`
@@ -156,6 +157,31 @@ func (a *AuthService) Login(req *LoginRequest) (*LoginResponse, error) {
 		ExpiresAt:    expiresAt,
 		User:         user,
 	}, nil
+}
+
+// ResetPassword sets a random temp password and forces change on next login
+func (a *AuthService) ResetPassword(userID string) (string, error) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+
+	user, exists := a.usersByID[userID]
+	if !exists {
+		return "", errors.New("user not found")
+	}
+
+	// Generate temp password: 16 chars, satisfies policy
+	tempPassword := "Temp@" + generateRandomString(8) + "1"
+
+	salt, err := crypto.GenerateSalt(16)
+	if err != nil {
+		return "", err
+	}
+	user.PasswordHash = crypto.HashPassword(tempPassword, salt)
+	user.PasswordSalt = salt
+	user.PasswordChangeRequired = true
+	user.UpdatedAt = time.Now()
+
+	return tempPassword, nil
 }
 
 // ValidateToken validates a JWT token and returns the user

@@ -97,6 +97,7 @@ var Migrations = []string{
 		role VARCHAR(50) NOT NULL,
 		bank_id VARCHAR(50),
 		is_active BOOLEAN DEFAULT TRUE,
+		is_deleted BOOLEAN DEFAULT FALSE,
 		password_change_required BOOLEAN DEFAULT FALSE,
 		login_count INT DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

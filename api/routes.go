@@ -41,6 +41,10 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux.Handle("GET /api/v1/auth/profile",
 		middleware.Authenticate(http.HandlerFunc(handlers.GetProfile)))
 
+	// Password change
+	mux.Handle("POST /api/v1/auth/change-password",
+		middleware.Authenticate(http.HandlerFunc(handlers.ChangePassword)))
+
 	// KYC Routes
 	mux.Handle("POST /api/v1/kyc",
 		middleware.Authenticate(
@@ -229,6 +233,38 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCVerify)(
 				http.HandlerFunc(handlers.ScanAndVerifyKYCFile))))
+
+	// ==================== User Management Routes ====================
+
+	// List all users (admin only)
+	mux.Handle("GET /api/v1/users/list",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ListUsers))))
+
+	// Create internal user (admin only)
+	mux.Handle("POST /api/v1/users",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.CreateUser))))
+
+	// Update user (toggle active, role, etc.)
+	mux.Handle("PATCH /api/v1/users",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.UpdateUser))))
+
+	// Soft-delete user (is_deleted = true, not removed from DB)
+	mux.Handle("DELETE /api/v1/users",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.DeleteUser))))
+
+	// Reset password for a user (sets temp password + password_change_required)
+	mux.Handle("POST /api/v1/users/reset-password",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ResetUserPassword))))
 
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))

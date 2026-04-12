@@ -1054,13 +1054,14 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 			role,
 			bank_id,
 			is_active,
+			is_deleted,
 			password_change_required,
 			login_count,
 			created_at,
 			updated_at,
 			last_login
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			email                    = EXCLUDED.email,
@@ -1069,6 +1070,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 			role                     = EXCLUDED.role,
 			bank_id                  = EXCLUDED.bank_id,
 			is_active                = EXCLUDED.is_active,
+			is_deleted               = EXCLUDED.is_deleted,
 			password_change_required = EXCLUDED.password_change_required,
 			login_count              = EXCLUDED.login_count,
 			updated_at               = EXCLUDED.updated_at,
@@ -1090,6 +1092,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 		string(user.Role),
 		nullableString(user.BankID),
 		user.IsActive,
+		user.IsDeleted,
 		user.PasswordChangeRequired,
 		user.LoginCount,
 		user.CreatedAt,
@@ -1165,12 +1168,13 @@ func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
 		SELECT
 			id, username, email, password_hash, password_salt, role,
 			COALESCE(bank_id, ''), is_active,
+			COALESCE(is_deleted,FALSE),
 			COALESCE(password_change_required, TRUE),
 			COALESCE(login_count, 0),
 			created_at, updated_at,
 			COALESCE(last_login, '0001-01-01 00:00:00')
 		FROM users
-		WHERE is_active = TRUE
+		WHERE is_deleted = FALSE
 		ORDER BY created_at ASC
 	`
 
@@ -1189,7 +1193,7 @@ func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
 		err := rows.Scan(
 			&user.ID, &user.Username, &user.Email,
 			&user.PasswordHash, &user.PasswordSalt, &role,
-			&user.BankID, &user.IsActive,
+			&user.BankID, &user.IsActive, &user.IsDeleted,
 			&user.PasswordChangeRequired, &user.LoginCount,
 			&user.CreatedAt, &user.UpdatedAt, &lastLogin,
 		)
