@@ -1456,6 +1456,9 @@ func (p *PostgresStorage) LoadAllKYCRecords() ([]*models.KYCData, error) {
 				KeyID:    keyID.String,
 			}
 			kyc.EncryptionKeyID = keyID.String
+			kyc.IDNumber = encryptedStringPlaceholder
+			kyc.Email = encryptedStringPlaceholder
+			kyc.Phone = encryptedStringPlaceholder
 		} else {
 			kyc.IDNumber = idNumber
 			kyc.Email = email

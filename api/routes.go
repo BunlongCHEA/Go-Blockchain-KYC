@@ -45,63 +45,6 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux.Handle("POST /api/v1/auth/change-password",
 		middleware.Authenticate(http.HandlerFunc(handlers.ChangePassword)))
 
-	// KYC Routes
-	mux.Handle("POST /api/v1/kyc",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCCreate)(
-				http.HandlerFunc(handlers.CreateKYC))))
-
-	mux.Handle("GET /api/v1/kyc",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYC))))
-
-	mux.Handle("PUT /api/v1/kyc",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCUpdate)(
-				http.HandlerFunc(handlers.UpdateKYC))))
-
-	mux.Handle("DELETE /api/v1/kyc",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCDelete)(
-				http.HandlerFunc(handlers.DeleteKYC))))
-
-	mux.Handle("GET /api/v1/kyc/list",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.ListKYC))))
-
-	mux.Handle("GET /api/v1/kyc/history",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYCHistory))))
-
-	mux.Handle("POST /api/v1/kyc/verify",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCVerify)(
-				http.HandlerFunc(handlers.VerifyKYC))))
-
-	mux.Handle("POST /api/v1/kyc/reject",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCReject)(
-				http.HandlerFunc(handlers.RejectKYC))))
-
-	mux.Handle("POST /api/v1/kyc/auto-verify",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCVerify)(
-				http.HandlerFunc(handlers.AutoVerifyKYC))))
-
-	// KYC Review Routes
-	mux.Handle("POST /api/v1/kyc/review",
-		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleBankOfficer)(
-				http.HandlerFunc(handlers.PeriodicReviewKYC))))
-
-	mux.Handle("GET /api/v1/kyc/review/status",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCRead)(
-				http.HandlerFunc(handlers.GetKYCReviewStatus))))
-
 	// Bank Routes
 	mux.Handle("POST /api/v1/banks",
 		middleware.Authenticate(
@@ -201,6 +144,68 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux.Handle("POST /api/v1/alerts/renewal/configure",
 		middleware.Authenticate(
 			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
+
+	// ==================== KYC Lists Routes ====================
+	mux.Handle("POST /api/v1/kyc",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCCreate)(
+				http.HandlerFunc(handlers.CreateKYC))))
+
+	mux.Handle("GET /api/v1/kyc",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.GetKYC))))
+
+	mux.Handle("PUT /api/v1/kyc",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCUpdate)(
+				http.HandlerFunc(handlers.UpdateKYC))))
+
+	mux.Handle("DELETE /api/v1/kyc",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCDelete)(
+				http.HandlerFunc(handlers.DeleteKYC))))
+
+	mux.Handle("GET /api/v1/kyc/list",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.ListKYC))))
+
+	mux.Handle("GET /api/v1/kyc/history",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.GetKYCHistory))))
+
+	mux.Handle("POST /api/v1/kyc/verify",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCVerify)(
+				http.HandlerFunc(handlers.VerifyKYC))))
+
+	mux.Handle("POST /api/v1/kyc/reject",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCReject)(
+				http.HandlerFunc(handlers.RejectKYC))))
+
+	mux.Handle("POST /api/v1/kyc/auto-verify",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCVerify)(
+				http.HandlerFunc(handlers.AutoVerifyKYC))))
+
+	// KYC Review Routes
+	mux.Handle("POST /api/v1/kyc/review",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleBankOfficer)(
+				http.HandlerFunc(handlers.PeriodicReviewKYC))))
+
+	mux.Handle("GET /api/v1/kyc/review/status",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.GetKYCReviewStatus))))
+
+	mux.Handle("GET /api/v1/kyc/stats",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermKYCRead)(
+				http.HandlerFunc(handlers.GetKYCStats))))
 
 	// ==================== KYC AI Scan Routes ====================
 

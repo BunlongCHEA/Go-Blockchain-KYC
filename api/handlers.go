@@ -810,6 +810,45 @@ func (h *Handlers) ListKYC(w http.ResponseWriter, r *http.Request) {
 	SendPaginated(w, records, page, perPage, totalItems)
 }
 
+// GetKYCStats returns KYC record counts grouped by status
+func (h *Handlers) GetKYCStats(w http.ResponseWriter, r *http.Request) {
+	user, _ := GetUserFromContext(r)
+
+	allRecords := h.blockchain.GetAllKYCRecords()
+
+	// Bank-scoped users only see their own bank's records
+	counts := map[string]int{
+		"total":     0,
+		"pending":   0,
+		"verified":  0,
+		"rejected":  0,
+		"suspended": 0,
+		"expired":   0,
+	}
+
+	for _, kyc := range allRecords {
+		// Filter by bank for non-admin roles
+		if (user.Role == auth.RoleBankAdmin || user.Role == auth.RoleBankOfficer) && kyc.BankID != user.BankID {
+			continue
+		}
+		counts["total"]++
+		switch kyc.Status {
+		case models.StatusPending:
+			counts["pending"]++
+		case models.StatusVerified:
+			counts["verified"]++
+		case models.StatusRejected:
+			counts["rejected"]++
+		case models.StatusSuspended:
+			counts["suspended"]++
+		case models.StatusExpired:
+			counts["expired"]++
+		}
+	}
+
+	SendSuccess(w, "", counts)
+}
+
 // GetKYCHistory retrieves transaction history for a customer
 func (h *Handlers) GetKYCHistory(w http.ResponseWriter, r *http.Request) {
 	customerID := r.URL.Query().Get("customer_id")
