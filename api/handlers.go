@@ -2326,6 +2326,9 @@ type PythonKYCVerifyResponse struct {
 	Reason           string                 `json:"reason"`
 	Timestamp        string                 `json:"timestamp"`
 	ScoreBreakdown   map[string]interface{} `json:"score_breakdown"`
+	VerifiedBy       string                 `json:"verified_by"`       // "google_vision|ArcFace|gfpgan_restored"
+	DocumentHash     string                 `json:"document_hash"`     // SHA-256 hex (64 chars)
+	VerificationDate int64                  `json:"verification_date"` // Unix timestamp
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2707,6 +2710,20 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	score := pyResp.OverallScore
 	kyc.ScanScore = &score
 	kyc.ScanStatus = pyResp.Status // "VERIFIED" | "REJECTED" | "NEEDS_REVIEW"
+
+	// verified_by — from Python response (google_vision|ArcFace|gfpgan_restored)
+	if pyResp.VerifiedBy != "" {
+		kyc.VerifiedBy = pyResp.VerifiedBy
+	}
+
+	// document_hash — from Python response (SHA-256 of id image bytes)
+	if pyResp.DocumentHash != "" {
+		kyc.DocumentHash = pyResp.DocumentHash
+	}
+
+	// verification_date — Unix timestamp now
+	kyc.VerificationDate = time.Now().Unix() // always set at scan time
+
 	if pyResp.OCRResult != nil {
 		kyc.OCRResult = pyResp.OCRResult
 	}
@@ -2738,6 +2755,26 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 			kyc.Status = models.StatusRejected
 		}
 	}
+
+	// // verified_by — from Python response (google_vision|ArcFace|gfpgan_restored)
+	// if v, ok := pyResp.FaceResult["preprocessing"].(string); ok && v != "" {
+	// 	ocr := "google_vision"
+	// 	model := settings_FACE_MODEL // or read from pyResp.FaceResult["model"]
+	// 	if m, ok2 := pyResp.FaceResult["model"].(string); ok2 && m != "" {
+	// 		model = m
+	// 	}
+	// 	kyc.VerifiedBy = ocr + "|" + model + "|" + v
+	// } else if vb, ok := pyResp.ScoreBreakdown["verified_by"].(string); ok {
+	// 	kyc.VerifiedBy = vb
+	// }
+
+	// // verification_date — Unix timestamp now
+	// kyc.VerificationDate = time.Now().Unix()
+
+	// // document_hash — from Python response (SHA-256 of id image bytes)
+	// if dh, ok := pyResp.ScoreBreakdown["document_hash"].(string); ok && dh != "" {
+	// 	kyc.DocumentHash = dh
+	// }
 
 	// // Persist
 	// if h.storage != nil {
@@ -2861,6 +2898,20 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	score := pyResp.OverallScore
 	kyc.ScanScore = &score
 	kyc.ScanStatus = pyResp.Status // "VERIFIED" | "REJECTED" | "NEEDS_REVIEW"
+
+	// verified_by — from Python response (google_vision|ArcFace|gfpgan_restored)
+	if pyResp.VerifiedBy != "" {
+		kyc.VerifiedBy = pyResp.VerifiedBy
+	}
+
+	// document_hash — from Python response (SHA-256 of id image bytes)
+	if pyResp.DocumentHash != "" {
+		kyc.DocumentHash = pyResp.DocumentHash
+	}
+
+	// verification_date — Unix timestamp now
+	kyc.VerificationDate = time.Now().Unix() // always set at scan time
+
 	if pyResp.OCRResult != nil {
 		kyc.OCRResult = pyResp.OCRResult
 	}
@@ -2897,6 +2948,26 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 			kyc.Status = models.StatusRejected
 		}
 	}
+
+	// // verified_by — from Python response (google_vision|ArcFace|gfpgan_restored)
+	// if v, ok := pyResp.FaceResult["preprocessing"].(string); ok && v != "" {
+	// 	ocr := "google_vision"
+	// 	model := settings_FACE_MODEL // or read from pyResp.FaceResult["model"]
+	// 	if m, ok2 := pyResp.FaceResult["model"].(string); ok2 && m != "" {
+	// 		model = m
+	// 	}
+	// 	kyc.VerifiedBy = ocr + "|" + model + "|" + v
+	// } else if vb, ok := pyResp.ScoreBreakdown["verified_by"].(string); ok {
+	// 	kyc.VerifiedBy = vb
+	// }
+
+	// // verification_date — Unix timestamp now
+	// kyc.VerificationDate = time.Now().Unix()
+
+	// // document_hash — from Python response (SHA-256 of id image bytes)
+	// if dh, ok := pyResp.ScoreBreakdown["document_hash"].(string); ok && dh != "" {
+	// 	kyc.DocumentHash = dh
+	// }
 
 	// log.Printf("SaveKYC result for %s: %v", customerID, h.storage.SaveKYC(kyc))
 	if h.storage != nil {
