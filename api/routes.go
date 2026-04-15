@@ -35,6 +35,10 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	mux.HandleFunc("GET /api/v1/banks/list",
 		http.HandlerFunc(handlers.ListBanks))
 
+	// Public - no auth needed
+	mux.Handle("POST /api/v1/certificate/verify",
+		http.HandlerFunc(handlers.VerifyCertificate))
+
 	// ==================== Protected Routes ====================
 
 	// Profile
@@ -132,9 +136,6 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
 				http.HandlerFunc(handlers.IssueVerificationCertificate))))
-
-	mux.Handle("POST /api/v1/certificate/verify",
-		http.HandlerFunc(handlers.VerifyCertificate)) // Public - no auth needed
 
 	// Renewal Alerts Routes
 	mux.Handle("GET /api/v1/alerts/renewal",

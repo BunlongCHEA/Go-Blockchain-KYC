@@ -63,6 +63,10 @@ var Migrations = []string{
 		scan_score NUMERIC(5,2),
 		scan_status VARCHAR(20),
 		ocr_result JSONB,
+		last_review_date BIGINT DEFAULT 0,
+		next_review_date BIGINT DEFAULT 0,
+		review_count INT DEFAULT 0,
+		review_notes TEXT,
 		created_at BIGINT NOT NULL,
 		updated_at BIGINT NOT NULL
 	)`,

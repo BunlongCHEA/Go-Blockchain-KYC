@@ -472,8 +472,8 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 			id_type, id_number_encrypted, id_expiry_date,
 			address_street, address_city, address_state, address_postal_code, address_country,
 			email_encrypted, phone_encrypted, status, verified_by, verification_date,
-			document_hash, risk_level, bank_id, encryption_key_id, id_image_path, selfie_image_path, last_scan_at, scan_score, scan_status, ocr_result, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+			document_hash, risk_level, bank_id, encryption_key_id, id_image_path, selfie_image_path, last_scan_at, scan_score, scan_status, ocr_result, last_review_date, next_review_date, review_count, review_notes, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
 		ON CONFLICT (customer_id) DO UPDATE SET
 			first_name           = EXCLUDED.first_name,
             last_name            = EXCLUDED.last_name,
@@ -500,6 +500,10 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
             scan_score           = EXCLUDED.scan_score,
             scan_status          = EXCLUDED.scan_status,
             ocr_result           = EXCLUDED.ocr_result,
+			last_review_date     = EXCLUDED.last_review_date,
+        	next_review_date     = EXCLUDED.next_review_date,
+        	review_count         = EXCLUDED.review_count,
+        	review_notes         = EXCLUDED.review_notes,
             updated_at           = EXCLUDED.updated_at
 	`
 
@@ -544,8 +548,12 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 		kyc.ScanScore,          // $26  *float64   → NULL when nil
 		kyc.ScanStatus,         // $27
 		ocrResultJSON,          // $28  interface{} nil → SQL NULL ✓
-		kyc.CreatedAt,          // $29
-		kyc.UpdatedAt,          // $30
+		kyc.LastReviewDate,     // $29
+		kyc.NextReviewDate,     // $30
+		kyc.ReviewCount,        // $31
+		kyc.ReviewNotes,        // $32
+		kyc.CreatedAt,          // $33
+		kyc.UpdatedAt,          // $34
 	)
 
 	if err != nil {
@@ -562,7 +570,7 @@ func (p *PostgresStorage) GetKYC(customerID string) (*models.KYCData, error) {
 			id_type, id_number_encrypted, id_expiry_date,
 			address_street, address_city, address_state, address_postal_code, address_country,
 			email_encrypted, phone_encrypted, status, verified_by, verification_date,
-			document_hash, risk_level, bank_id, encryption_key_id, created_at, updated_at
+			document_hash, risk_level, bank_id, encryption_key_id, COALESCE(last_review_date, 0), COALESCE(next_review_date, 0), COALESCE(review_count, 0), COALESCE(review_notes, ''), created_at, updated_at
 		FROM kyc_records WHERE customer_id = $1
 	`
 
@@ -595,6 +603,10 @@ func (p *PostgresStorage) GetKYC(customerID string) (*models.KYCData, error) {
 		&kyc.RiskLevel,
 		&kyc.BankID,
 		&keyID,
+		&kyc.LastReviewDate,
+		&kyc.NextReviewDate,
+		&kyc.ReviewCount,
+		&kyc.ReviewNotes,
 		&kyc.CreatedAt,
 		&kyc.UpdatedAt,
 	)
@@ -736,6 +748,10 @@ func (p *PostgresStorage) scanKYCRecords(rows *sql.Rows) ([]*models.KYCData, err
 			&kyc.RiskLevel,
 			&kyc.BankID,
 			&keyID,
+			&kyc.LastReviewDate,
+			&kyc.NextReviewDate,
+			&kyc.ReviewCount,
+			&kyc.ReviewNotes,
 			&kyc.CreatedAt,
 			&kyc.UpdatedAt,
 		)
@@ -1390,7 +1406,7 @@ func (p *PostgresStorage) LoadAllKYCRecords() ([]*models.KYCData, error) {
 			   id_type, id_number_encrypted, id_expiry_date,
 			   address_street, address_city, address_state, address_postal_code, address_country,
 			   email_encrypted, phone_encrypted, status, verified_by, verification_date,
-			   document_hash, risk_level, bank_id, encryption_key_id, created_at, updated_at
+			   document_hash, risk_level, bank_id, encryption_key_id, COALESCE(last_review_date, 0), COALESCE(next_review_date, 0), COALESCE(review_count, 0), COALESCE(review_notes, ''), created_at, updated_at
 		FROM kyc_records
 	`
 
@@ -1433,6 +1449,10 @@ func (p *PostgresStorage) LoadAllKYCRecords() ([]*models.KYCData, error) {
 			&kyc.RiskLevel,
 			&kyc.BankID,
 			&keyID,
+			&kyc.LastReviewDate,
+			&kyc.NextReviewDate,
+			&kyc.ReviewCount,
+			&kyc.ReviewNotes,
 			&kyc.CreatedAt,
 			&kyc.UpdatedAt,
 		)

@@ -153,6 +153,16 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist user to DB so login survives restart
+	// for ALL roles including "customer" so every registered user is durable.
+	if h.storage != nil {
+		if dbErr := h.storage.SaveUser(user); dbErr != nil {
+			// Log but don't fail the registration — user is in memory and
+			// can operate this session; next restart may require re-register.
+			log.Printf("[Register] Warning: could not persist user to DB: %v", dbErr)
+		}
+	}
+
 	SendCreated(w, "user registered successfully", map[string]interface{}{
 		"id":       user.ID,
 		"username": user.Username,
@@ -372,6 +382,19 @@ func (h *Handlers) AutoVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			SendBadRequest(w, err.Error())
 			return
+		}
+
+		// Persist the pending transaction to DB so it survives restart ──
+		if h.storage != nil {
+			pendingTxs := h.blockchain.GetPendingTransactions()
+			for _, tx := range pendingTxs {
+				if tx.CustomerID == req.CustomerID {
+					if err := h.storage.SaveTransaction(tx); err != nil {
+						log.Printf("[VerifyKYC] Warning: could not persist tx to DB: %v", err)
+					}
+					break
+				}
+			}
 		}
 
 	case models.StatusRejected:
@@ -656,6 +679,19 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
+	}
+
+	// Persist the pending transaction to DB so it survives restart ──
+	if h.storage != nil {
+		pendingTxs := h.blockchain.GetPendingTransactions()
+		for _, tx := range pendingTxs {
+			if tx.CustomerID == req.CustomerID {
+				if err := h.storage.SaveTransaction(tx); err != nil {
+					log.Printf("[VerifyKYC] Warning: could not persist tx to DB: %v", err)
+				}
+				break
+			}
+		}
 	}
 
 	// Update in database
@@ -2786,6 +2822,19 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			kyc.Status = models.StatusVerified
+
+			// Persist the pending transaction to DB so it survives restart
+			if h.storage != nil {
+				pendingTxs := h.blockchain.GetPendingTransactions()
+				for _, tx := range pendingTxs {
+					if tx.CustomerID == req.CustomerID {
+						if err := h.storage.SaveTransaction(tx); err != nil {
+							log.Printf("[VerifyKYC] Warning: could not persist tx to DB: %v", err)
+						}
+						break
+					}
+				}
+			}
 		case models.StatusRejected:
 			if err := h.blockchain.RejectKYC(req.CustomerID, bankID, user.ID, pyResp.Reason); err != nil {
 				SendBadRequest(w, err.Error())
@@ -2978,6 +3027,19 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			kyc.Status = models.StatusVerified
+
+			// Persist the pending transaction to DB so it survives restart ──
+			if h.storage != nil {
+				pendingTxs := h.blockchain.GetPendingTransactions()
+				for _, tx := range pendingTxs {
+					if tx.CustomerID == customerID {
+						if err := h.storage.SaveTransaction(tx); err != nil {
+							log.Printf("[VerifyKYC] Warning: could not persist tx to DB: %v", err)
+						}
+						break
+					}
+				}
+			}
 		case models.StatusRejected:
 			if err := h.blockchain.RejectKYC(customerID, bankID, user.ID, pyResp.Reason); err != nil {
 				log.Printf("ERROR RejectKYC %s: %v", customerID, err)
