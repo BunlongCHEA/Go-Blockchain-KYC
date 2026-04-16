@@ -1828,6 +1828,14 @@ func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Persist certificate to database (allows for audit logging and renewal tracking)
+	if h.storage != nil {
+		if err := h.storage.SaveCertificate(cert); err != nil {
+			log.Printf("[IssueVerificationCertificate] Warning: could not persist cert: %v", err)
+			// Don't fail the request — certificate was issued, just not persisted
+		}
+	}
+
 	// Calculate renewal reminder date (30 days before expiry)
 	renewalReminderDate := time.Unix(cert.ExpiresAt, 0).AddDate(0, 0, -30)
 
@@ -1967,6 +1975,108 @@ func (h *Handlers) VerifyCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SendSuccess(w, message, response)
+}
+
+// ListCertificates returns all issued certificates (paginated)
+// GET /api/v1/certificates/list?requester_id=X&limit=100
+func (h *Handlers) ListCertificates(w http.ResponseWriter, r *http.Request) {
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	requesterID := r.URL.Query().Get("requester_id")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	certs, err := h.storage.ListCertificates(requesterID, limit)
+	if err != nil {
+		SendInternalError(w, "failed to list certificates: "+err.Error())
+		return
+	}
+
+	// Return the FULL VerificationCertificate shape so the frontend can pass it
+	// directly to POST /api/v1/certificate/verify without modification.
+	// Using models.VerificationCertificate field names directly.
+	type KYCSummaryRow struct {
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
+		Nationality string `json:"nationality"`
+		IDType      string `json:"id_type"`
+		RiskLevel   string `json:"risk_level"`
+		BankID      string `json:"bank_id"`
+	}
+
+	type CertRow struct {
+		// Frontend display aliases
+		ID           string `json:"id"`
+		CustomerName string `json:"customer_name"`
+		Hash         string `json:"hash"`      // = Signature, for table display
+		Issuer       string `json:"issuer"`    // = IssuerID, for table display
+		IssuedAt     int64  `json:"issued_at"` // = SignedAt, for table display
+
+		// Full VerificationCertificate fields (matches models.VerificationCertificate JSON tags)
+		CertificateID      string        `json:"certificate_id"`
+		CustomerID         string        `json:"customer_id"`
+		Status             string        `json:"status"`
+		VerifiedBy         string        `json:"verified_by"`
+		VerificationDate   int64         `json:"verification_date"`
+		ExpiresAt          int64         `json:"expires_at"`
+		RequesterID        string        `json:"requester_id"`
+		RequesterPublicKey string        `json:"requester_public_key,omitempty"`
+		KYCSummary         KYCSummaryRow `json:"kyc_summary"`
+		IssuerID           string        `json:"issuer_id"`
+		IssuerPublicKey    string        `json:"issuer_public_key"`
+		KeyType            string        `json:"key_type"`
+		Signature          string        `json:"signature"`
+		SignedAt           int64         `json:"signed_at"`
+	}
+
+	rows := make([]CertRow, 0, len(certs))
+	for _, c := range certs {
+		customerName := c.KYCSummary.FirstName + " " + c.KYCSummary.LastName
+		if customerName == " " {
+			customerName = c.CustomerID
+		}
+		rows = append(rows, CertRow{
+			// Display aliases
+			ID:           c.CertificateID,
+			CustomerName: customerName,
+			Hash:         c.Signature,
+			Issuer:       c.IssuerID,
+			IssuedAt:     c.SignedAt,
+
+			// Full verify fields
+			CertificateID:      c.CertificateID,
+			CustomerID:         c.CustomerID,
+			Status:             c.Status,
+			VerifiedBy:         c.VerifiedBy,
+			VerificationDate:   c.VerificationDate,
+			ExpiresAt:          c.ExpiresAt,
+			RequesterID:        c.RequesterID,
+			RequesterPublicKey: c.RequesterPubKey,
+			KYCSummary: KYCSummaryRow{
+				FirstName:   c.KYCSummary.FirstName,
+				LastName:    c.KYCSummary.LastName,
+				Nationality: c.KYCSummary.Nationality,
+				IDType:      c.KYCSummary.IDType,
+				RiskLevel:   c.KYCSummary.RiskLevel,
+				BankID:      c.KYCSummary.BankID,
+			},
+			IssuerID:        c.IssuerID,
+			IssuerPublicKey: c.IssuerPubKey,
+			KeyType:         c.KeyType,
+			Signature:       c.Signature,
+			SignedAt:        c.SignedAt,
+		})
+	}
+
+	SendSuccess(w, "", rows)
 }
 
 // calculateCertificateValidity calculates the actual certificate validity

@@ -251,3 +251,13 @@ func generateCertificateID() string {
 	rand.Read(b)
 	return "CERT" + base64.URLEncoding.EncodeToString(b)[:20]
 }
+
+// IssuedAt returns the Unix timestamp when the certificate was issued (== SignedAt)
+func (vc *VerificationCertificate) IssuedAt() int64 {
+	return vc.SignedAt
+}
+
+// CustomerName returns a display name from KYCSummary
+func (vc *VerificationCertificate) CustomerName() string {
+	return vc.KYCSummary.FirstName + " " + vc.KYCSummary.LastName
+}

@@ -1953,3 +1953,160 @@ func (p *PostgresStorage) UpdateRequesterKeyLastUsed(keyID string) error {
 	_, err := p.db.Exec(query, time.Now().Unix(), keyID)
 	return err
 }
+
+// ==================== Certificate Operations ====================
+
+// SaveCertificate persists a VerificationCertificate after issuance
+func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) error {
+	summaryJSON, _ := json.Marshal(cert.KYCSummary)
+
+	// customer_name = FirstName + " " + LastName from KYCSummary
+	customerName := cert.KYCSummary.FirstName + " " + cert.KYCSummary.LastName
+
+	query := `
+		INSERT INTO certificates (
+			certificate_id, customer_id, customer_name, requester_id,
+			requester_public_key, issuer_id, issuer_public_key,
+			status, verified_by, verification_date,
+			key_type, signature, kyc_summary, issued_at, expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT (certificate_id) DO NOTHING
+	`
+	_, err := p.db.Exec(query,
+		cert.CertificateID,
+		cert.CustomerID,
+		customerName,
+		cert.RequesterID,
+		cert.RequesterPubKey,
+		cert.IssuerID,
+		cert.IssuerPubKey,
+		cert.Status,
+		cert.VerifiedBy,
+		cert.VerificationDate,
+		cert.KeyType,
+		cert.Signature,
+		summaryJSON,
+		cert.SignedAt, // (time of signing)
+		cert.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save certificate: %w", err)
+	}
+	return nil
+}
+
+// GetCertificate retrieves a certificate by ID
+func (p *PostgresStorage) GetCertificate(certificateID string) (*models.VerificationCertificate, error) {
+	query := `
+		SELECT certificate_id, customer_id, customer_name, requester_id,
+		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
+		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at
+		FROM certificates WHERE certificate_id = $1
+	`
+	row := p.db.QueryRow(query, certificateID)
+	return scanCertificate(row)
+}
+
+// ListCertificates returns all certificates, optionally filtered by requester_id
+func (p *PostgresStorage) ListCertificates(requesterID string, limit int) ([]*models.VerificationCertificate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	selectCols := `
+		SELECT certificate_id, customer_id, customer_name, requester_id,
+		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
+		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at
+		FROM certificates`
+
+	var rows *sql.Rows
+	var err error
+	if requesterID != "" {
+		rows, err = p.db.Query(
+			selectCols+` WHERE requester_id = $1 ORDER BY issued_at DESC LIMIT $2`, requesterID, limit)
+	} else {
+		rows, err = p.db.Query(selectCols+` ORDER BY issued_at DESC LIMIT $1`, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to list certificates: %w", err)
+	}
+	defer rows.Close()
+
+	var certs []*models.VerificationCertificate
+	for rows.Next() {
+		cert, err := scanCertificateRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}
+
+// scanCertificate scans a single *sql.Row
+func scanCertificate(row *sql.Row) (*models.VerificationCertificate, error) {
+	cert := &models.VerificationCertificate{}
+	var customerName sql.NullString
+	var summaryJSON []byte
+
+	err := row.Scan(
+		&cert.CertificateID,
+		&cert.CustomerID,
+		&customerName,
+		&cert.RequesterID,
+		&cert.RequesterPubKey,
+		&cert.IssuerID,
+		&cert.IssuerPubKey,
+		&cert.Status,
+		&cert.VerifiedBy,
+		&cert.VerificationDate,
+		&cert.KeyType,
+		&cert.Signature,
+		&summaryJSON,
+		&cert.SignedAt,
+		&cert.ExpiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("certificate not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan certificate: %w", err)
+	}
+	if summaryJSON != nil {
+		json.Unmarshal(summaryJSON, &cert.KYCSummary)
+	}
+	return cert, nil
+}
+
+// scanCertificateRow scans a *sql.Rows row
+func scanCertificateRow(rows *sql.Rows) (*models.VerificationCertificate, error) {
+	cert := &models.VerificationCertificate{}
+	var customerName sql.NullString
+	var summaryJSON []byte
+
+	err := rows.Scan(
+		&cert.CertificateID,
+		&cert.CustomerID,
+		&customerName,
+		&cert.RequesterID,
+		&cert.RequesterPubKey,
+		&cert.IssuerID,
+		&cert.IssuerPubKey,
+		&cert.Status,
+		&cert.VerifiedBy,
+		&cert.VerificationDate,
+		&cert.KeyType,
+		&cert.Signature,
+		&summaryJSON,
+		&cert.SignedAt,
+		&cert.ExpiresAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan certificate row: %w", err)
+	}
+	if summaryJSON != nil {
+		json.Unmarshal(summaryJSON, &cert.KYCSummary)
+	}
+	return cert, nil
+}

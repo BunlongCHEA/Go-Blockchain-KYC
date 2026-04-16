@@ -789,7 +789,72 @@ Set Request Body (JSON)
 }
 ```
 
-# V. Kubernetes & Monitoring
+
+# V. External Request Customer KYC
+
++ What the Requester Key actually does?
+
+When you issue a certificate, the Go backend signs it with the system's private key (ECDSA/RSA — stored in ./keys/system_private.pem). That signature goes in cert.Signature. This is the real security — it proves the KYC Blockchain System issued it.
+The requester_public_key is a separate, optional field stored inside the certificate payload. Its purpose is not to sign the certificate. It is stored so that:
+
+- The external service can prove they are the intended recipient — only they hold the matching private key
+- In future integrations, the KYC system could encrypt the certificate or challenge-response using their public key
+- It creates an audit trail — you know exactly which external system's key this cert was issued to
+
++ Who owns the Requester Key?
+
+The requester is whoever asks the KYC system to issue a certificate on behalf of a customer. 
+
+In real-world usage:
+| Scenario | Who is the requester |
+|---|---|
+| ABA Bank's loan system checks a customer's KYC before approving a loan | `ABA Bank's loan API service` |
+| National Bank of Cambodia audits customer identities | `NBC's compliance system`|
+
+Each external service that wants to receive certificates gets their own requester key. The bank that owns the KYC system is the issuer — it uses the system key pair, not requester keys.
+
++ Do you need one requester key per bank?
+
+No — the model is one key per external service or integration, not per bank. A single bank might have multiple:
+
+```bash
+ABA Bank loan-service         → KEY_LOAN-SERVI_123456
+ABA Bank mobile-app-backend   → KEY_MOBILE-APP_234567
+ABA Bank compliance-system    → KEY_COMPLIANCE_345678
+NBC audit-portal              → KEY_AUDIT-PORT_456789
+InsureCo partner-api          → KEY_PARTNER-AP_567890
+```
+
+The requester_id field (which IS required) is the main identifier. The key is optional proof of who that requester is.
+
++ If you want to use requester keys (recommended for production):
+
+- Step 1 — Generate the key (one time per external service, done by admin):
+```bash
+POST /api/v1/keys/generate
+Authorization: Bearer <admin_token>
+
+{
+  "key_name": "aba-loan-service",
+  "key_type": "ECDSA",
+  "key_size": 256,
+  "organization": "ABA Bank",
+  "email": "tech@ababank.com",
+  "description": "Loan approval system certificate requests"
+}
+```
+Response contains private_key_pem — shown only once, never stored by the server. Save it securely. Also returns public_key_pem — stored in the requester_keys table.
+- Step 2 — Give the private key to the external service securely (encrypted email, vault, etc.)
+- Step 3 — When issuing a certificate, paste the public_key_pem into the Requester Public Key field
+- Step 4 — The external service uses their private key to prove they are the intended recipient if needed
+
+If you skip requester keys (fine for internal/simple usage):
+
+Just leave the Requester Public Key field empty in the Issue dialog. Set a meaningful requester_id like aba-loan-system as a plain text identifier. Everything works exactly the same. The certificate is issued, signed, and verifiable.
+
+
+
+# VI. Kubernetes & Monitoring
 
 ## Diagnose — Is the App Listening on 9090?
 

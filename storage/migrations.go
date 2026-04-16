@@ -159,6 +159,32 @@ var Migrations = []string{
 		revoked_by VARCHAR(50)
 	)`,
 
+	// Certificate storage table
+	`CREATE TABLE IF NOT EXISTS certificates (
+		certificate_id   VARCHAR(50)  PRIMARY KEY,
+		customer_id      VARCHAR(50)  NOT NULL,
+		customer_name    VARCHAR(255),
+		requester_id     VARCHAR(100) NOT NULL,
+		requester_public_key  TEXT,
+		issuer_id        VARCHAR(100),
+		issuer_public_key   TEXT,
+		status           VARCHAR(20)  NOT NULL DEFAULT 'VERIFIED',
+		verified_by           VARCHAR(100),
+    	verification_date     BIGINT,
+		key_type         VARCHAR(10),
+		signature        TEXT,
+		kyc_summary      JSONB,
+		issued_at        BIGINT       NOT NULL,
+		expires_at       BIGINT       NOT NULL,
+		created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE
+	)`,
+
+	// `ALTER TABLE certificates
+	// 	ADD COLUMN IF NOT EXISTS requester_public_key TEXT,
+	// 	ADD COLUMN IF NOT EXISTS verified_by VARCHAR(100),
+	// 	ADD COLUMN IF NOT EXISTS verification_date BIGINT;`,
+
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)`,
@@ -173,4 +199,7 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_name ON requester_keys(key_name)`,
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_fingerprint ON requester_keys(fingerprint)`,
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_active ON requester_keys(is_active)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_customer   ON certificates(customer_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_requester  ON certificates(requester_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_expires_at ON certificates(expires_at)`,
 }

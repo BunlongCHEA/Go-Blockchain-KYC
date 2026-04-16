@@ -74,4 +74,9 @@ type Storage interface {
 	GetAllRequesterKeys() ([]*models.RequesterKeyInfo, error)
 	RevokeRequesterKey(keyID string) error
 	UpdateRequesterKeyLastUsed(keyID string) error
+
+	// Certificate operations
+	SaveCertificate(cert *models.VerificationCertificate) error
+	GetCertificate(certificateID string) (*models.VerificationCertificate, error)
+	ListCertificates(requesterID string, limit int) ([]*models.VerificationCertificate, error)
 }

@@ -137,6 +137,16 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
 				http.HandlerFunc(handlers.IssueVerificationCertificate))))
 
+	// List all issued certificates (admin / bank_admin)
+	mux.Handle("GET /api/v1/certificates/list",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
+				http.HandlerFunc(handlers.ListCertificates))))
+
+	// mux.Handle("GET /api/v1/certificate",
+	// 	middleware.Authenticate(
+	// 		http.HandlerFunc(handlers.GetCertificate)))
+
 	// Renewal Alerts Routes
 	mux.Handle("GET /api/v1/alerts/renewal",
 		middleware.Authenticate(
