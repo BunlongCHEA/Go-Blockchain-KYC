@@ -161,23 +161,26 @@ var Migrations = []string{
 
 	// Certificate storage table
 	`CREATE TABLE IF NOT EXISTS certificates (
-		certificate_id   VARCHAR(50)  PRIMARY KEY,
-		customer_id      VARCHAR(50)  NOT NULL,
-		customer_name    VARCHAR(255),
-		requester_id     VARCHAR(100) NOT NULL,
+		certificate_id        VARCHAR(50)  PRIMARY KEY,
+		customer_id           VARCHAR(50)  NOT NULL,
+		customer_name         VARCHAR(255),
+		requester_id          VARCHAR(100) NOT NULL,
 		requester_public_key  TEXT,
-		issuer_id        VARCHAR(100),
-		issuer_public_key   TEXT,
-		status           VARCHAR(20)  NOT NULL DEFAULT 'VERIFIED',
+		issuer_id             VARCHAR(100),
+		issuer_public_key     TEXT,
+		status                VARCHAR(20)  NOT NULL DEFAULT 'VERIFIED',
 		verified_by           VARCHAR(100),
-    	verification_date     BIGINT,
-		key_type         VARCHAR(10),
-		signature        TEXT,
-		kyc_summary      JSONB,
-		issued_at        BIGINT       NOT NULL,
-		expires_at       BIGINT       NOT NULL,
-		created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE
+		verification_date     BIGINT,
+		key_type              VARCHAR(10),
+		signature             TEXT,
+		kyc_summary           JSONB,
+		issued_at             BIGINT       NOT NULL,
+		expires_at            BIGINT       NOT NULL,
+		created_at            TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE,
+		-- One active certificate per customer per requester.
+		-- Re-issuing replaces instead of accumulating duplicates.
+		UNIQUE (customer_id, requester_id)
 	)`,
 
 	// `ALTER TABLE certificates

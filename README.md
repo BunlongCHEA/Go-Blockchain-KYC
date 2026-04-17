@@ -792,7 +792,7 @@ Set Request Body (JSON)
 
 # V. External Request Customer KYC
 
-+ What the Requester Key actually does?
+## What the Requester Key actually does?
 
 When you issue a certificate, the Go backend signs it with the system's private key (ECDSA/RSA — stored in ./keys/system_private.pem). That signature goes in cert.Signature. This is the real security — it proves the KYC Blockchain System issued it.
 The requester_public_key is a separate, optional field stored inside the certificate payload. Its purpose is not to sign the certificate. It is stored so that:
@@ -801,7 +801,7 @@ The requester_public_key is a separate, optional field stored inside the certifi
 - In future integrations, the KYC system could encrypt the certificate or challenge-response using their public key
 - It creates an audit trail — you know exactly which external system's key this cert was issued to
 
-+ Who owns the Requester Key?
+## Who owns the Requester Key?
 
 The requester is whoever asks the KYC system to issue a certificate on behalf of a customer. 
 
@@ -813,7 +813,7 @@ In real-world usage:
 
 Each external service that wants to receive certificates gets their own requester key. The bank that owns the KYC system is the issuer — it uses the system key pair, not requester keys.
 
-+ Do you need one requester key per bank?
+## Do you need one requester key per bank?
 
 No — the model is one key per external service or integration, not per bank. A single bank might have multiple:
 
@@ -827,7 +827,7 @@ InsureCo partner-api          → KEY_PARTNER-AP_567890
 
 The requester_id field (which IS required) is the main identifier. The key is optional proof of who that requester is.
 
-+ If you want to use requester keys (recommended for production):
+If you want to use requester keys (recommended for production):
 
 - Step 1 — Generate the key (one time per external service, done by admin):
 ```bash

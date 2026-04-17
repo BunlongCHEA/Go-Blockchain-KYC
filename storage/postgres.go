@@ -1970,7 +1970,20 @@ func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) 
 			status, verified_by, verification_date,
 			key_type, signature, kyc_summary, issued_at, expires_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-		ON CONFLICT (certificate_id) DO NOTHING
+		ON CONFLICT (customer_id, requester_id) DO UPDATE SET
+			certificate_id       = EXCLUDED.certificate_id,
+			customer_name        = EXCLUDED.customer_name,
+			requester_public_key = EXCLUDED.requester_public_key,
+			issuer_id            = EXCLUDED.issuer_id,
+			issuer_public_key    = EXCLUDED.issuer_public_key,
+			status               = EXCLUDED.status,
+			verified_by          = EXCLUDED.verified_by,
+			verification_date    = EXCLUDED.verification_date,
+			key_type             = EXCLUDED.key_type,
+			signature            = EXCLUDED.signature,
+			kyc_summary          = EXCLUDED.kyc_summary,
+			issued_at            = EXCLUDED.issued_at,
+			expires_at           = EXCLUDED.expires_at
 	`
 	_, err := p.db.Exec(query,
 		cert.CertificateID,
