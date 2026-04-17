@@ -13,6 +13,7 @@ const (
 	RoleBankOfficer Role = "bank_officer"
 	RoleAuditor     Role = "auditor"
 	RoleCustomer    Role = "customer"
+	RoleIntegrationService Role = "integration_service" // NextJS gateway machine account
 )
 
 // Permission represents a system permission
@@ -80,6 +81,22 @@ var RolePermissions = map[Role][]Permission{
 		PermKYCRead,   // Only their own KYC
 		PermKYCCreate, // To submit KYC
 		PermKYCVerify, // To check KYC status
+	},
+	// ── Integration Service — NextJS gateway machine account ──────────────────
+	// Has all permissions needed to proxy external API calls.
+	// Never logs in interactively — credentials stored in NextJS .env.local only.
+	RoleIntegrationService: {
+		// KYC — full CRUD + verify/reject
+		PermKYCCreate, PermKYCRead, PermKYCUpdate, PermKYCDelete,
+		PermKYCVerify, PermKYCReject,
+		// Banks — read + create (no update/delete for safety)
+		PermBankRead, PermBankCreate,
+		// Users — read + create + update (no delete for safety)
+		PermUserRead, PermUserCreate, PermUserUpdate,
+		// Blockchain — read + mine
+		PermBlockchainRead, PermBlockchainMine,
+		// Audit — read only
+		PermAuditRead,
 	},
 }
 

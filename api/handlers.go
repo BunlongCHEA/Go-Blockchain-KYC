@@ -3275,15 +3275,19 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Disallow creating customer or another admin via this endpoint
-	allowedRoles := map[string]bool{
-		"bank_admin": true, "bank_officer": true, "auditor": true,
-	}
-	if !allowedRoles[req.Role] {
-		SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor")
-		return
-	}
+    allowedRoles := map[string]bool{
+        "bank_admin":          true,
+        "bank_officer":        true,
+        "auditor":             true,
+        "integration_service": true, // ← NEW: NextJS gateway machine account
+    }
+    if !allowedRoles[req.Role] {
+        SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor, integration_service")
+        return
+    }
 
 	// Validate bank assignment for bank roles
+	// bank_admin and bank_officer require a bank — integration_service does NOT
 	if (req.Role == "bank_admin" || req.Role == "bank_officer") && req.BankID == "" {
 		SendBadRequest(w, "bank_id is required for bank_admin and bank_officer roles")
 		return

@@ -104,7 +104,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 
 	mux.Handle("GET /api/v1/security/alerts",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.GetSecurityAlerts))))
 
 	mux.Handle("POST /api/v1/security/alerts/review",
@@ -134,13 +134,13 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// Certificate Routes
 	mux.Handle("POST /api/v1/certificate/issue",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.IssueVerificationCertificate))))
 
 	// List all issued certificates (admin / bank_admin)
 	mux.Handle("GET /api/v1/certificates/list",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.ListCertificates))))
 
 	// mux.Handle("GET /api/v1/certificate",
@@ -255,19 +255,19 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// List all users (admin only)
 	mux.Handle("GET /api/v1/users/list",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.ListUsers))))
 
 	// Create internal user (admin only)
 	mux.Handle("POST /api/v1/users",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.CreateUser))))
 
 	// Update user (toggle active, role, etc.)
 	mux.Handle("PATCH /api/v1/users",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.UpdateUser))))
 
 	// Soft-delete user (is_deleted = true, not removed from DB)
@@ -279,7 +279,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// Reset password for a user (sets temp password + password_change_required)
 	mux.Handle("POST /api/v1/users/reset-password",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.ResetUserPassword))))
 
 	// Apply global middleware
