@@ -3306,7 +3306,13 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// New internal users must change password on first login
-	user.PasswordChangeRequired = true
+	// user.PasswordChangeRequired = true
+
+	// New internal users must change password on first login
+    // Exception: integration_service is a machine account — no interactive login
+    if req.Role != string(auth.RoleIntegrationService) {
+        user.PasswordChangeRequired = true
+    }
 
 	if h.storage != nil {
 		if err := h.storage.SaveUser(user); err != nil {
