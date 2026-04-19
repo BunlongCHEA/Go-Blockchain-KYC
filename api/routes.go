@@ -41,13 +41,15 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 
 	// ==================== Protected Routes ====================
 
-	// Profile
+	// ==================== Profile & Auth Routes
 	mux.Handle("GET /api/v1/auth/profile",
 		middleware.Authenticate(http.HandlerFunc(handlers.GetProfile)))
 
 	// Password change
 	mux.Handle("POST /api/v1/auth/change-password",
 		middleware.Authenticate(http.HandlerFunc(handlers.ChangePassword)))
+
+	// ==================== Bank & Blockchain Routes
 
 	// Bank Routes
 	mux.Handle("POST /api/v1/banks",
@@ -64,6 +66,8 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// 	middleware.Authenticate(
 	// 		middleware.RequirePermission(auth.PermBankRead)(
 	// 			http.HandlerFunc(handlers.ListBanks))))
+
+	// ==================== Blockchain Routes
 
 	// Blockchain Routes
 	mux.Handle("GET /api/v1/blockchain/stats",
@@ -96,6 +100,8 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermBlockchainRead)(
 				http.HandlerFunc(handlers.ValidateChain))))
 
+	// ==================== Audit Routes
+
 	// Monitoring Routes
 	mux.Handle("GET /api/v1/audit/logs",
 		middleware.Authenticate(
@@ -112,7 +118,17 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin)(
 				http.HandlerFunc(handlers.ReviewSecurityAlert))))
 
-	// Requester Key Routes
+	// Renewal Alerts Routes
+	mux.Handle("GET /api/v1/alerts/renewal",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetRenewalAlerts)))
+
+	mux.Handle("POST /api/v1/alerts/renewal/configure",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
+
+	// ==================== Requester Key & Certificate Routes
+
 	mux.Handle("POST /api/v1/keys/generate",
 		middleware.Authenticate(
 			http.HandlerFunc(handlers.GenerateRequesterKeyPair)))
@@ -147,16 +163,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// 	middleware.Authenticate(
 	// 		http.HandlerFunc(handlers.GetCertificate)))
 
-	// Renewal Alerts Routes
-	mux.Handle("GET /api/v1/alerts/renewal",
-		middleware.Authenticate(
-			http.HandlerFunc(handlers.GetRenewalAlerts)))
-
-	mux.Handle("POST /api/v1/alerts/renewal/configure",
-		middleware.Authenticate(
-			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
-
-	// ==================== KYC Lists Routes ====================
+	// ==================== KYC Lists Routes
 	mux.Handle("POST /api/v1/kyc",
 		middleware.Authenticate(
 			middleware.RequirePermission(auth.PermKYCCreate)(
@@ -218,7 +225,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermKYCRead)(
 				http.HandlerFunc(handlers.GetKYCStats))))
 
-	// ==================== KYC AI Scan Routes ====================
+	// ==================== KYC AI Scan Routes
 
 	// POST /api/v1/kyc/upload-doc          – base64 ID/Passport scan
 	mux.Handle("POST /api/v1/kyc/upload-doc",
@@ -250,7 +257,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermKYCVerify)(
 				http.HandlerFunc(handlers.ScanAndVerifyKYCFile))))
 
-	// ==================== User Management Routes ====================
+	// ==================== User Management Routes
 
 	// List all users (admin only)
 	mux.Handle("GET /api/v1/users/list",

@@ -163,6 +163,12 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit log
+	h.audit(r, ActionRegister, ResourceAuth, user.ID, map[string]interface{}{
+		"username": user.Username,
+		"role":     user.Role,
+	})
+
 	SendCreated(w, "user registered successfully", map[string]interface{}{
 		"id":       user.ID,
 		"username": user.Username,
@@ -184,6 +190,11 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		SendUnauthorized(w, err.Error())
 		return
 	}
+
+	// Audit log
+	h.audit(r, ActionLogin, ResourceAuth, req.Username, map[string]interface{}{
+		"username": req.Username,
+	})
 
 	SendSuccess(w, "login successful", response)
 }
@@ -279,20 +290,10 @@ func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit log
-	if h.storage != nil {
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       user.ID,
-			Action:       "PASSWORD_CHANGED",
-			ResourceType: "USER",
-			ResourceID:   user.ID,
-			Details: map[string]interface{}{
-				"username": user.Username,
-				"role":     user.Role,
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
-		})
-	}
+	h.audit(r, ActionPasswordChange, ResourceAuth, user.ID, map[string]interface{}{
+		"username": user.Username,
+		"role":     user.Role,
+	})
 
 	SendSuccess(w, "Password changed successfully", map[string]interface{}{
 		"username":                 user.Username,
@@ -419,6 +420,14 @@ func (h *Handlers) AutoVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		h.storage.SaveKYC(kyc)
 	}
 
+	// Audit log for auto-verification result
+	h.audit(r, ActionKYCAutoVerify, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"status":      result.Status,
+		"score":       result.Score,
+		"risk_level":  result.RiskLevel,
+	})
+
 	SendSuccess(w, "Auto-verification completed", map[string]interface{}{
 		"customer_id":      req.CustomerID,
 		"status":           result.Status,
@@ -518,6 +527,15 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit log
+	h.audit(r, ActionKYCCreate, ResourceKYC, customerID, map[string]interface{}{
+		"customer_id": customerID,
+		"bank_id":     bankID,
+		"first_name":  req.FirstName,
+		"last_name":   req.LastName,
+		"id_type":     req.IDType,
+	})
+
 	// SendCreated(w, "KYC created successfully", map[string]interface{}{
 	// 	"customer_id": customerID,
 	// 	"status":      kycData.Status,
@@ -546,6 +564,11 @@ func (h *Handlers) GetKYC(w http.ResponseWriter, r *http.Request) {
 		SendForbidden(w, "access denied")
 		return
 	}
+
+	// Audit log for KYC read access (sensitive record access)
+	h.audit(r, ActionKYCRead, ResourceKYC, customerID, map[string]interface{}{
+		"customer_id": customerID,
+	})
 
 	kyc, err := h.blockchain.ReadKYC(customerID, true)
 	if err != nil {
@@ -630,6 +653,12 @@ func (h *Handlers) UpdateKYC(w http.ResponseWriter, r *http.Request) {
 		h.storage.SaveKYC(kyc)
 	}
 
+	// Audit log for KYC update
+	h.audit(r, ActionKYCUpdate, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"description": req.Description,
+	})
+
 	SendSuccess(w, "KYC updated successfully", map[string]interface{}{
 		"customer_id":   kyc.CustomerID,
 		"status":        kyc.Status,
@@ -700,6 +729,13 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 		h.storage.SaveKYC(kyc)
 	}
 
+	// Audit log for KYC verification
+	h.audit(r, ActionKYCVerify, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"bank_id":     bankID,
+		"status":      models.StatusVerified,
+	})
+
 	SendSuccess(w, "KYC verified - transaction created for blockchain", map[string]interface{}{
 		"customer_id":       req.CustomerID,
 		"status":            models.StatusVerified,
@@ -751,6 +787,12 @@ func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit log for KYC rejection
+	h.audit(r, ActionKYCReject, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"reason":      req.Reason,
+	})
+
 	SendSuccess(w, "KYC rejected - NOT added to blockchain", map[string]interface{}{
 		"customer_id":   req.CustomerID,
 		"status":        models.StatusRejected,
@@ -791,6 +833,12 @@ func (h *Handlers) DeleteKYC(w http.ResponseWriter, r *http.Request) {
 	if h.storage != nil {
 		h.storage.DeleteKYC(req.CustomerID)
 	}
+
+	// Audit log for KYC deletion
+	h.audit(r, ActionKYCDelete, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"reason":      req.Reason,
+	})
 
 	SendSuccess(w, "KYC deleted successfully", map[string]interface{}{
 		"customer_id": req.CustomerID,
@@ -842,6 +890,13 @@ func (h *Handlers) ListKYC(w http.ResponseWriter, r *http.Request) {
 		}
 		records = records[start:end]
 	}
+
+	// Audit log for KYC list access (sensitive record access)
+	h.audit(r, ActionKYCList, ResourceKYC, user.ID, map[string]interface{}{
+		"status_filter": status,
+		"page":          page,
+		"per_page":      perPage,
+	})
 
 	SendPaginated(w, records, page, perPage, totalItems)
 }
@@ -968,6 +1023,14 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetBlockchainStats(w http.ResponseWriter, r *http.Request) {
 	stats := h.blockchain.GetStats()
 	stats["is_valid"] = h.blockchain.IsChainValid()
+
+	// Audit log for blockchain stats access (sensitive operational data)
+	h.audit(r, ActionBlockchainStatsRead, ResourceBlockchain, "", map[string]interface{}{
+		"total_blocks": stats["total_blocks"],
+		"pending_tx":   stats["pending_transactions"],
+		"is_valid":     stats["is_valid"],
+	})
+
 	SendSuccess(w, "", stats)
 }
 
@@ -999,6 +1062,13 @@ func (h *Handlers) GetBlocks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit log for block list access (sensitive operational data)
+	h.audit(r, ActionBlockListRead, ResourceBlockchain, "", map[string]interface{}{
+		"page":         page,
+		"per_page":     perPage,
+		"total_blocks": totalBlocks,
+	})
+
 	SendPaginated(w, blocks, page, perPage, totalBlocks)
 }
 
@@ -1025,6 +1095,12 @@ func (h *Handlers) GetBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit log for block access (sensitive operational data)
+	h.audit(r, ActionBlockRead, ResourceBlockchain, fmt.Sprintf("%d", block.Index), map[string]interface{}{
+		"block_index": block.Index,
+		"block_hash":  block.Hash,
+	})
+
 	SendSuccess(w, "", block)
 }
 
@@ -1040,18 +1116,36 @@ func (h *Handlers) MineBlock(w http.ResponseWriter, r *http.Request) {
 		h.storage.SaveBlock(block)
 	}
 
+	// Audit log for block mining
+	h.audit(r, ActionBlockMine, ResourceBlockchain, fmt.Sprintf("%d", block.Index), map[string]interface{}{
+		"block_index": block.Index,
+		"block_hash":  block.Hash,
+		"tx_count":    len(block.Transactions),
+	})
+
 	SendCreated(w, "block mined successfully", block)
 }
 
 // GetPendingTransactions returns pending transactions
 func (h *Handlers) GetPendingTransactions(w http.ResponseWriter, r *http.Request) {
 	txs := h.blockchain.GetPendingTransactions()
+
+	// Audit log for pending transaction access (sensitive operational data)
+	h.audit(r, ActionPendingTxRead, ResourceBlockchain, "", map[string]interface{}{
+		"pending_tx_count": len(txs),
+	})
 	SendSuccess(w, "", txs)
 }
 
 // ValidateChain validates the blockchain
 func (h *Handlers) ValidateChain(w http.ResponseWriter, r *http.Request) {
 	isValid := h.blockchain.IsChainValid()
+
+	// Audit log for chain validation
+	h.audit(r, ActionChainValidate, ResourceBlockchain, "", map[string]interface{}{
+		"is_valid": isValid,
+	})
+
 	SendSuccess(w, "", map[string]bool{"is_valid": isValid})
 }
 
@@ -1113,6 +1207,15 @@ func (h *Handlers) GetAuditLogs(w http.ResponseWriter, r *http.Request) {
 		SendError(w, http.StatusServiceUnavailable, "audit logs not available - no database configured")
 		return
 	}
+
+	// Audit log for audit log access (meta-audit)
+	h.audit(r, ActionAuditLogRead, ResourceAudit, "", map[string]interface{}{
+		"filter_user_id": userID,
+		"filter_action":  action,
+		"start_date":     startTime.Format("2006-01-02"),
+		"end_date":       endTime.Format("2006-01-02"),
+		"limit":          limit,
+	})
 
 	// Get audit logs from storage
 	logs, err := h.storage.GetAuditLogs(userID, action, startTime, endTime, limit)
@@ -1233,6 +1336,13 @@ func (h *Handlers) ReviewSecurityAlert(w http.ResponseWriter, r *http.Request) {
 		SendNotFound(w, err.Error())
 		return
 	}
+
+	// Audit log for alert review
+	h.audit(r, ActionSecurityAlertReview, ResourceAlert, req.AlertID, map[string]interface{}{
+		"alert_id": req.AlertID,
+		"action":   req.Action,
+		"notes":    req.Notes,
+	})
 
 	SendSuccess(w, "Alert reviewed successfully", map[string]interface{}{
 		"alert_id":    req.AlertID,
@@ -1363,25 +1473,17 @@ func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Save to audit log
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       user.ID,
-			Action:       "REQUESTER_KEYPAIR_GENERATED",
-			ResourceType: "REQUESTER_KEY",
-			ResourceID:   keyID,
-			Details: map[string]interface{}{
-				"key_id":           keyID,
-				"key_name":         req.KeyName,
-				"key_type":         req.KeyType,
-				"key_size":         req.KeySize,
-				"organization":     req.Organization,
-				"email":            req.Email,
-				"fingerprint":      fingerprint,
-				"expires_at":       expiresAt.Unix(),
-				"public_key_path":  publicKeyPath,
-				"private_key_path": privateKeyPath,
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
+		h.audit(r, ActionKeyGenerate, ResourceKey, keyID, map[string]interface{}{
+			"key_id":           keyID,
+			"key_name":         req.KeyName,
+			"key_type":         req.KeyType,
+			"key_size":         req.KeySize,
+			"organization":     req.Organization,
+			"email":            req.Email,
+			"fingerprint":      fingerprint,
+			"expires_at":       expiresAt.Unix(),
+			"public_key_path":  publicKeyPath,
+			"private_key_path": privateKeyPath,
 		})
 	}
 
@@ -1613,6 +1715,11 @@ func (h *Handlers) GetRequesterKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit log for requester key list access (sensitive info access)
+	h.audit(r, ActionKeyRead, ResourceKey, "", map[string]interface{}{
+		"count": len(keys),
+	})
+
 	SendSuccess(w, "", map[string]interface{}{
 		"keys":  keys,
 		"count": len(keys),
@@ -1647,6 +1754,12 @@ func (h *Handlers) GetRequesterKeyByID(w http.ResponseWriter, r *http.Request) {
 		SendNotFound(w, "requester key not found")
 		return
 	}
+
+	// Audit log for requester key access (sensitive info access)
+	h.audit(r, ActionKeyRead, ResourceKey, key.ID, map[string]interface{}{
+		"key_id":   key.ID,
+		"key_name": key.KeyName,
+	})
 
 	SendSuccess(w, "", map[string]interface{}{
 		"key": key,
@@ -1695,19 +1808,11 @@ func (h *Handlers) RevokeRequesterKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save to audit log
-	h.storage.SaveAuditLog(&models.AuditLog{
-		UserID:       user.ID,
-		Action:       "REQUESTER_KEY_REVOKED",
-		ResourceType: "REQUESTER_KEY",
-		ResourceID:   req.KeyID,
-		Details: map[string]interface{}{
-			"key_id":       req.KeyID,
-			"key_name":     key.KeyName,
-			"organization": key.Organization,
-			"reason":       req.Reason,
-		},
-		IPAddress: getClientIP(r),
-		CreatedAt: time.Now(),
+	h.audit(r, ActionKeyRevoke, ResourceKey, req.KeyID, map[string]interface{}{
+		"key_id":       req.KeyID,
+		"key_name":     key.KeyName,
+		"organization": key.Organization,
+		"reason":       req.Reason,
 	})
 
 	SendSuccess(w, "Requester key revoked successfully", map[string]interface{}{
@@ -1722,11 +1827,11 @@ func (h *Handlers) RevokeRequesterKey(w http.ResponseWriter, r *http.Request) {
 
 // IssueVerificationCertificate issues a signed KYC verification certificate & with grace period handling
 func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r)
-	if !ok {
-		SendUnauthorized(w, "user not found")
-		return
-	}
+	// user, ok := GetUserFromContext(r)
+	// if !ok {
+	// 	SendUnauthorized(w, "user not found")
+	// 	return
+	// }
 
 	var req IssueVerificationCertificateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1830,9 +1935,24 @@ func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.R
 
 	// Persist certificate to database (allows for audit logging and renewal tracking)
 	if h.storage != nil {
+		// 1. Persist the new certificate
 		if err := h.storage.SaveCertificate(cert); err != nil {
 			log.Printf("[IssueVerificationCertificate] Warning: could not persist cert: %v", err)
 			// Don't fail the request — certificate was issued, just not persisted
+		} else {
+			// 2. Deactivate previous certs for same customer+requester
+			//    (keeps history, only latest shows in default UI view)
+			if deactErr := h.storage.DeactivateOldCertificates(
+				cert.CustomerID, cert.RequesterID, cert.CertificateID,
+			); deactErr != nil {
+				log.Printf("[IssueVerificationCertificate] Warning: could not deactivate old certs: %v", deactErr)
+			}
+
+			// 3. Dismiss pending renewal alerts for this customer
+			//    (no more "cert expiring" noise after a successful re-issue)
+			if alertErr := h.storage.DeactivateRenewalAlerts(cert.CustomerID); alertErr != nil {
+				log.Printf("[IssueVerificationCertificate] Warning: could not deactivate renewal alerts: %v", alertErr)
+			}
 		}
 	}
 
@@ -1841,24 +1961,16 @@ func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.R
 
 	// Log the certificate issuance
 	if h.storage != nil {
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       user.ID,
-			Action:       "CERTIFICATE_ISSUED",
-			ResourceType: "KYC_CERTIFICATE",
-			ResourceID:   cert.CertificateID,
-			Details: map[string]interface{}{
-				"customer_id":        req.CustomerID,
-				"requester_id":       req.RequesterID,
-				"certificate_id":     cert.CertificateID,
-				"key_type":           cert.KeyType,
-				"requested_validity": req.ValidityDays,
-				"actual_validity":    validityDays,
-				"expires_at":         cert.ExpiresAt,
-				"id_expiry_date":     kyc.IDExpiryDate,
-				"renewal_reminder":   renewalReminderDate.Unix(),
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
+		h.audit(r, ActionCertIssue, ResourceCertificate, cert.CertificateID, map[string]interface{}{
+			"customer_id":        req.CustomerID,
+			"requester_id":       req.RequesterID,
+			"certificate_id":     cert.CertificateID,
+			"key_type":           cert.KeyType,
+			"requested_validity": req.ValidityDays,
+			"actual_validity":    validityDays,
+			"expires_at":         cert.ExpiresAt,
+			"id_expiry_date":     kyc.IDExpiryDate,
+			"renewal_reminder":   renewalReminderDate.Unix(),
 		})
 
 		// **2: Schedule renewal alert**
@@ -1974,6 +2086,15 @@ func (h *Handlers) VerifyCertificate(w http.ResponseWriter, r *http.Request) {
 		message = "Certificate verified but in grace period - renewal required"
 	}
 
+	// Audit log the verification attempt with grace period details
+	h.audit(r, ActionCertVerify, ResourceCertificate, cert.CertificateID, map[string]interface{}{
+		"certificate_id": cert.CertificateID,
+		"customer_id":    cert.CustomerID,
+		"requester_id":   cert.RequesterID,
+		"in_grace":       inGracePeriod,
+		"is_expired":     isExpired,
+	})
+
 	SendSuccess(w, message, response)
 }
 
@@ -1987,6 +2108,8 @@ func (h *Handlers) ListCertificates(w http.ResponseWriter, r *http.Request) {
 
 	requesterID := r.URL.Query().Get("requester_id")
 	limitStr := r.URL.Query().Get("limit")
+	includeHistory := r.URL.Query().Get("include_history") == "true"
+
 	limit := 100
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
@@ -1994,11 +2117,18 @@ func (h *Handlers) ListCertificates(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	certs, err := h.storage.ListCertificates(requesterID, limit)
+	certs, err := h.storage.ListCertificates(requesterID, limit, includeHistory)
 	if err != nil {
 		SendInternalError(w, "failed to list certificates: "+err.Error())
 		return
 	}
+
+	// Audit log the certificate listing action
+	h.audit(r, ActionCertList, ResourceCertificate, "", map[string]interface{}{
+		"requester_id":    requesterID,
+		"limit":           limit,
+		"include_history": includeHistory,
+	})
 
 	// Return the FULL VerificationCertificate shape so the frontend can pass it
 	// directly to POST /api/v1/certificate/verify without modification.
@@ -2035,6 +2165,9 @@ func (h *Handlers) ListCertificates(w http.ResponseWriter, r *http.Request) {
 		KeyType            string        `json:"key_type"`
 		Signature          string        `json:"signature"`
 		SignedAt           int64         `json:"signed_at"`
+
+		// is_active — lets the UI distinguish latest vs historical
+		IsActive bool `json:"is_active"`
 	}
 
 	rows := make([]CertRow, 0, len(certs))
@@ -2073,6 +2206,7 @@ func (h *Handlers) ListCertificates(w http.ResponseWriter, r *http.Request) {
 			KeyType:         c.KeyType,
 			Signature:       c.Signature,
 			SignedAt:        c.SignedAt,
+			IsActive:        c.IsActive,
 		})
 	}
 
@@ -2342,22 +2476,14 @@ func (h *Handlers) PeriodicReviewKYC(w http.ResponseWriter, r *http.Request) {
 		h.storage.SaveKYC(kyc)
 
 		// Log the review
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       user.ID,
-			Action:       "KYC_PERIODIC_REVIEW",
-			ResourceType: "KYC",
-			ResourceID:   req.CustomerID,
-			Details: map[string]interface{}{
-				"customer_id":  req.CustomerID,
-				"review_count": kyc.ReviewCount,
-				"risk_level":   kyc.RiskLevel,
-				"next_review":  kyc.NextReviewDate,
-				"aml_check":    "PASS",
-				"pep_check":    "PASS",
-				"documents":    "VALID",
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
+		h.audit(r, ActionKYCReview, ResourceKYC, req.CustomerID, map[string]interface{}{
+			"customer_id":  req.CustomerID,
+			"review_count": kyc.ReviewCount,
+			"risk_level":   kyc.RiskLevel,
+			"next_review":  kyc.NextReviewDate,
+			"aml_check":    "PASS",
+			"pep_check":    "PASS",
+			"documents":    "VALID",
 		})
 	}
 
@@ -2986,6 +3112,17 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit the scan action with detailed info
+	h.audit(r, ActionKYCAIScan, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id":       req.CustomerID,
+		"document_type":     req.DocumentType,
+		"ai_status":         pyResp.Status,
+		"kyc_status":        aiStatus,
+		"overall_score":     pyResp.OverallScore,
+		"document_verified": pyResp.DocumentVerified,
+		"face_matched":      pyResp.FaceMatched,
+	})
+
 	// Generate document hash for audit trail
 	hashInput := req.CustomerID + req.DocumentType + utils.FormatTimestamp(time.Now().Unix())
 	_ = hashInput // h.storage could store doc_hash here
@@ -3187,6 +3324,17 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Audit the scan action with detailed info
+	h.audit(r, ActionKYCAIScan, ResourceKYC, customerID, map[string]interface{}{
+		"customer_id":       customerID,
+		"document_type":     documentType,
+		"ai_status":         pyResp.Status,
+		"kyc_status":        aiStatus,
+		"overall_score":     pyResp.OverallScore,
+		"document_verified": pyResp.DocumentVerified,
+		"face_matched":      pyResp.FaceMatched,
+	})
+
 	txCreated := kyc.Status == models.StatusVerified
 
 	SendSuccess(w, "KYC AI scan verification completed", map[string]interface{}{
@@ -3275,16 +3423,16 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Disallow creating customer or another admin via this endpoint
-    allowedRoles := map[string]bool{
-        "bank_admin":          true,
-        "bank_officer":        true,
-        "auditor":             true,
-        "integration_service": true, // ← NEW: NextJS gateway machine account
-    }
-    if !allowedRoles[req.Role] {
-        SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor, integration_service")
-        return
-    }
+	allowedRoles := map[string]bool{
+		"bank_admin":          true,
+		"bank_officer":        true,
+		"auditor":             true,
+		"integration_service": true, // ← NEW: NextJS gateway machine account
+	}
+	if !allowedRoles[req.Role] {
+		SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor, integration_service")
+		return
+	}
 
 	// Validate bank assignment for bank roles
 	// bank_admin and bank_officer require a bank — integration_service does NOT
@@ -3309,28 +3457,22 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 	// user.PasswordChangeRequired = true
 
 	// New internal users must change password on first login
-    // Exception: integration_service is a machine account — no interactive login
-    if req.Role != string(auth.RoleIntegrationService) {
-        user.PasswordChangeRequired = true
-    }
+	// Exception: integration_service is a machine account — no interactive login
+	if req.Role != string(auth.RoleIntegrationService) {
+		user.PasswordChangeRequired = true
+	}
 
 	if h.storage != nil {
 		if err := h.storage.SaveUser(user); err != nil {
 			SendInternalError(w, "failed to persist user: "+err.Error())
 			return
 		}
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       getUserIDFromContext(r),
-			Action:       "USER_CREATED",
-			ResourceType: "USER",
-			ResourceID:   user.ID,
-			Details: map[string]interface{}{
-				"username": user.Username,
-				"role":     user.Role,
-				"bank_id":  user.BankID,
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
+
+		// Audit the user creation action
+		h.audit(r, ActionUserCreate, ResourceUser, user.ID, map[string]interface{}{
+			"username": user.Username,
+			"role":     user.Role,
+			"bank_id":  user.BankID,
 		})
 	}
 
@@ -3385,17 +3527,11 @@ func (h *Handlers) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	if h.storage != nil {
 		h.storage.SaveUser(user)
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       getUserIDFromContext(r),
-			Action:       "USER_UPDATED",
-			ResourceType: "USER",
-			ResourceID:   req.UserID,
-			Details: map[string]interface{}{
-				"is_active": req.IsActive,
-				"role":      req.Role,
-			},
-			IPAddress: getClientIP(r),
-			CreatedAt: time.Now(),
+
+		// Audit the update action with changed fields
+		h.audit(r, ActionUserUpdate, ResourceUser, req.UserID, map[string]interface{}{
+			"is_active": req.IsActive,
+			"role":      req.Role,
 		})
 	}
 
@@ -3432,14 +3568,10 @@ func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	if h.storage != nil {
 		h.storage.SaveUser(user)
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       getUserIDFromContext(r),
-			Action:       "USER_DELETED",
-			ResourceType: "USER",
-			ResourceID:   req.UserID,
-			Details:      map[string]interface{}{"username": user.Username},
-			IPAddress:    getClientIP(r),
-			CreatedAt:    time.Now(),
+
+		// Audit the deletion action
+		h.audit(r, ActionUserDelete, ResourceUser, req.UserID, map[string]interface{}{
+			"username": user.Username,
 		})
 	}
 
@@ -3469,14 +3601,10 @@ func (h *Handlers) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	user, _ := h.authService.GetUserByID(req.UserID)
 	if h.storage != nil && user != nil {
 		h.storage.SaveUser(user)
-		h.storage.SaveAuditLog(&models.AuditLog{
-			UserID:       getUserIDFromContext(r),
-			Action:       "USER_PASSWORD_RESET",
-			ResourceType: "USER",
-			ResourceID:   req.UserID,
-			Details:      map[string]interface{}{"username": user.Username},
-			IPAddress:    getClientIP(r),
-			CreatedAt:    time.Now(),
+
+		// Audit the password reset action
+		h.audit(r, ActionPasswordReset, ResourceUser, req.UserID, map[string]interface{}{
+			"username": user.Username,
 		})
 	}
 

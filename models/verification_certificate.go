@@ -39,6 +39,8 @@ type VerificationCertificate struct {
 	// Signature
 	Signature string `json:"signature"`
 	SignedAt  int64  `json:"signed_at"`
+
+	IsActive bool `json:"is_active"` // for soft deletion and history tracking
 }
 
 // KYCSummary contains non-sensitive KYC info for certificate

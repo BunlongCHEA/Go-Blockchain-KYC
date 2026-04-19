@@ -136,6 +136,7 @@ var Migrations = []string{
 		webhook_url TEXT,
 		email_recipient VARCHAR(255),
 		sent_at BIGINT,
+		is_active BOOLEAN NOT NULL DEFAULT TRUE,
 		created_at BIGINT NOT NULL
 	)`,
 
@@ -176,11 +177,12 @@ var Migrations = []string{
 		kyc_summary           JSONB,
 		issued_at             BIGINT       NOT NULL,
 		expires_at            BIGINT       NOT NULL,
+		is_active             BOOLEAN      NOT NULL DEFAULT TRUE,
 		created_at            TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE,
+		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE
 		-- One active certificate per customer per requester.
 		-- Re-issuing replaces instead of accumulating duplicates.
-		UNIQUE (customer_id, requester_id)
+		-- UNIQUE (customer_id, requester_id)
 	)`,
 
 	// `ALTER TABLE certificates
@@ -205,4 +207,5 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_certificates_customer   ON certificates(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_requester  ON certificates(requester_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_expires_at ON certificates(expires_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_is_active   ON certificates(customer_id, requester_id, is_active)`,
 }

@@ -1956,35 +1956,43 @@ func (p *PostgresStorage) UpdateRequesterKeyLastUsed(keyID string) error {
 
 // ==================== Certificate Operations ====================
 
-// SaveCertificate persists a VerificationCertificate after issuance
+// SaveCertificate persists a new VerificationCertificate.
+// Every issuance creates a NEW row with is_active=TRUE.
+// Deactivating old certs is handled separately by DeactivateOldCertificates
+// so the history is preserved and only the latest is shown by default.
 func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) error {
 	summaryJSON, _ := json.Marshal(cert.KYCSummary)
 
 	// customer_name = FirstName + " " + LastName from KYCSummary
 	customerName := cert.KYCSummary.FirstName + " " + cert.KYCSummary.LastName
 
+	// Always insert a fresh row — no ON CONFLICT upsert.
+	// certificate_id is unique by primary key; generateCertificateID uses rand so collisions
+	// are astronomically unlikely. We keep all history.
 	query := `
 		INSERT INTO certificates (
 			certificate_id, customer_id, customer_name, requester_id,
 			requester_public_key, issuer_id, issuer_public_key,
 			status, verified_by, verification_date,
-			key_type, signature, kyc_summary, issued_at, expires_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-		ON CONFLICT (customer_id, requester_id) DO UPDATE SET
-			certificate_id       = EXCLUDED.certificate_id,
-			customer_name        = EXCLUDED.customer_name,
-			requester_public_key = EXCLUDED.requester_public_key,
-			issuer_id            = EXCLUDED.issuer_id,
-			issuer_public_key    = EXCLUDED.issuer_public_key,
-			status               = EXCLUDED.status,
-			verified_by          = EXCLUDED.verified_by,
-			verification_date    = EXCLUDED.verification_date,
-			key_type             = EXCLUDED.key_type,
-			signature            = EXCLUDED.signature,
-			kyc_summary          = EXCLUDED.kyc_summary,
-			issued_at            = EXCLUDED.issued_at,
-			expires_at           = EXCLUDED.expires_at
+			key_type, signature, kyc_summary, issued_at, expires_at, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, TRUE)
 	`
+
+	// ON CONFLICT (customer_id, requester_id) DO UPDATE SET
+	// 		certificate_id       = EXCLUDED.certificate_id,
+	// 		customer_name        = EXCLUDED.customer_name,
+	// 		requester_public_key = EXCLUDED.requester_public_key,
+	// 		issuer_id            = EXCLUDED.issuer_id,
+	// 		issuer_public_key    = EXCLUDED.issuer_public_key,
+	// 		status               = EXCLUDED.status,
+	// 		verified_by          = EXCLUDED.verified_by,
+	// 		verification_date    = EXCLUDED.verification_date,
+	// 		key_type             = EXCLUDED.key_type,
+	// 		signature            = EXCLUDED.signature,
+	// 		kyc_summary          = EXCLUDED.kyc_summary,
+	// 		issued_at            = EXCLUDED.issued_at,
+	// 		expires_at           = EXCLUDED.expires_at
+
 	_, err := p.db.Exec(query,
 		cert.CertificateID,
 		cert.CustomerID,
@@ -2008,21 +2016,60 @@ func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) 
 	return nil
 }
 
-// GetCertificate retrieves a certificate by ID
+// DeactivateOldCertificates sets is_active=FALSE for all previous certificates
+// for the same customer+requester combination, excluding the newly issued one.
+// This is called immediately after SaveCertificate so history is kept but
+// the UI only shows the latest active cert by default.
+func (p *PostgresStorage) DeactivateOldCertificates(customerID, requesterID, newCertificateID string) error {
+	_, err := p.db.Exec(`
+		UPDATE certificates
+		SET    is_active = FALSE
+		WHERE  customer_id  = $1
+		AND    requester_id = $2
+		AND    certificate_id <> $3
+	`, customerID, requesterID, newCertificateID)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate old certificates: %w", err)
+	}
+	return nil
+}
+
+// DeactivateRenewalAlerts marks all pending renewal alerts for a customer
+// as inactive when a new certificate is successfully issued.
+// This prevents stale "cert expiring" alerts from appearing after renewal.
+func (p *PostgresStorage) DeactivateRenewalAlerts(customerID string) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    is_active = FALSE
+		WHERE  customer_id = $1
+		AND    is_active   = TRUE
+	`, customerID)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate renewal alerts: %w", err)
+	}
+	return nil
+}
+
+// GetCertificate retrieves a single certificate by ID (any is_active state)
 func (p *PostgresStorage) GetCertificate(certificateID string) (*models.VerificationCertificate, error) {
 	query := `
 		SELECT certificate_id, customer_id, customer_name, requester_id,
 		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
 		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
-		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE)
 		FROM certificates WHERE certificate_id = $1
 	`
 	row := p.db.QueryRow(query, certificateID)
 	return scanCertificate(row)
 }
 
-// ListCertificates returns all certificates, optionally filtered by requester_id
-func (p *PostgresStorage) ListCertificates(requesterID string, limit int) ([]*models.VerificationCertificate, error) {
+// ListCertificates returns certificates ordered newest first.
+//
+//	includeHistory = false  →  WHERE is_active = TRUE   (UI default)
+//	includeHistory = true   →  all rows                 (audit / history)
+//
+// requesterID can be empty to return all requesters.
+func (p *PostgresStorage) ListCertificates(requesterID string, limit int, includeHistory bool) ([]*models.VerificationCertificate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -2030,17 +2077,47 @@ func (p *PostgresStorage) ListCertificates(requesterID string, limit int) ([]*mo
 		SELECT certificate_id, customer_id, customer_name, requester_id,
 		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
 		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
-		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE)
 		FROM certificates`
 
-	var rows *sql.Rows
-	var err error
-	if requesterID != "" {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	// var rows *sql.Rows
+	// var err error
+
+	switch {
+	case requesterID != "" && !includeHistory:
 		rows, err = p.db.Query(
-			selectCols+` WHERE requester_id = $1 ORDER BY issued_at DESC LIMIT $2`, requesterID, limit)
-	} else {
-		rows, err = p.db.Query(selectCols+` ORDER BY issued_at DESC LIMIT $1`, limit)
+			selectCols+` WHERE requester_id=$1 AND is_active=TRUE ORDER BY issued_at DESC LIMIT $2`,
+			requesterID, limit)
+	case requesterID != "" && includeHistory:
+		rows, err = p.db.Query(
+			selectCols+` WHERE requester_id=$1 ORDER BY issued_at DESC LIMIT $2`,
+			requesterID, limit)
+	case requesterID == "" && !includeHistory:
+		rows, err = p.db.Query(
+			selectCols+` WHERE is_active=TRUE ORDER BY issued_at DESC LIMIT $1`,
+			limit)
+	default: // requesterID=="" && includeHistory
+		rows, err = p.db.Query(
+			selectCols+` ORDER BY issued_at DESC LIMIT $1`,
+			limit)
 	}
+
+	// if requesterID != "" {
+	// 	rows, err = p.db.Query(
+	// 		selectCols+` WHERE requester_id = $1 ORDER BY issued_at DESC LIMIT $2`, requesterID, limit)
+	// } else {
+	// 	rows, err = p.db.Query(selectCols+` ORDER BY issued_at DESC LIMIT $1`, limit)
+	// }
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to list certificates: %w", err)
+	// }
+	// defer rows.Close()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to list certificates: %w", err)
 	}
@@ -2057,7 +2134,7 @@ func (p *PostgresStorage) ListCertificates(requesterID string, limit int) ([]*mo
 	return certs, nil
 }
 
-// scanCertificate scans a single *sql.Row
+// scanCertificate scans a single *sql.Row (includes is_active column)
 func scanCertificate(row *sql.Row) (*models.VerificationCertificate, error) {
 	cert := &models.VerificationCertificate{}
 	var customerName sql.NullString
@@ -2079,6 +2156,7 @@ func scanCertificate(row *sql.Row) (*models.VerificationCertificate, error) {
 		&summaryJSON,
 		&cert.SignedAt,
 		&cert.ExpiresAt,
+		&cert.IsActive,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("certificate not found")
@@ -2114,6 +2192,7 @@ func scanCertificateRow(rows *sql.Rows) (*models.VerificationCertificate, error)
 		&summaryJSON,
 		&cert.SignedAt,
 		&cert.ExpiresAt,
+		&cert.IsActive,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan certificate row: %w", err)

@@ -78,5 +78,11 @@ type Storage interface {
 	// Certificate operations
 	SaveCertificate(cert *models.VerificationCertificate) error
 	GetCertificate(certificateID string) (*models.VerificationCertificate, error)
-	ListCertificates(requesterID string, limit int) ([]*models.VerificationCertificate, error)
+	// includeHistory=false → only is_active=true rows (UI default view)
+	// includeHistory=true  → all rows (audit / history view)
+	ListCertificates(requesterID string, limit int, includeHistory bool) ([]*models.VerificationCertificate, error)
+	// Called after a new cert is saved — deactivates older certs for same customer+requester
+	DeactivateOldCertificates(customerID, requesterID, newCertificateID string) error
+	// Called after a new cert is saved — deactivates pending renewal alerts
+	DeactivateRenewalAlerts(customerID string) error
 }
