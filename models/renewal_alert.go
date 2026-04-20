@@ -38,17 +38,22 @@ type RenewalAlert struct {
 }
 
 // NewRenewalAlert creates a new renewal alert
-func NewRenewalAlert(certID, customerID, requesterID, alertType string, alertDate, expiresAt int64) *RenewalAlert {
+func NewRenewalAlert(certID, customerID, requesterID, alertType string, alertDate, certExpiresAt int64) *RenewalAlert {
 	return &RenewalAlert{
-		ID:            generateAlertID(),
+		ID:            generateAlertID(), // keep existing ID generation
 		CertificateID: certID,
 		CustomerID:    customerID,
 		RequesterID:   requesterID,
 		AlertType:     alertType,
 		AlertDate:     alertDate,
-		CertExpiresAt: expiresAt,
-		Status:        AlertStatusPending,
+		CertExpiresAt: certExpiresAt,
 		CreatedAt:     time.Now().Unix(),
+
+		IsActive:     true,
+		Status:       "PENDING",
+		Delivery:     "none",
+		SendInterval: "immediate",
+		// webhook_url and email_recipient stay empty — configured later by user
 	}
 }
 
