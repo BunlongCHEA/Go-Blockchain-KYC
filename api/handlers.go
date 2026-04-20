@@ -72,6 +72,15 @@ type ConfigureRenewalAlertRequest struct {
 	CertificateID  string `json:"certificate_id"`
 	WebhookURL     string `json:"webhook_url,omitempty"`
 	EmailRecipient string `json:"email_recipient,omitempty"`
+	IsActive       *bool  `json:"is_active,omitempty"`
+	Delivery       string `json:"delivery,omitempty"`      // email|webhook|both|none
+	SendInterval   string `json:"send_interval,omitempty"` // immediate|daily|weekly
+}
+
+// SendRenewalAlertRequest — manual dispatch
+type SendRenewalAlertRequest struct {
+	CertificateID string `json:"certificate_id"`
+	AlertID       string `json:"alert_id"`
 }
 
 // GenerateKeyPairRequest represents request to generate key pair
@@ -2338,28 +2347,61 @@ func (h *Handlers) scheduleRenewalAlert(cert *models.VerificationCertificate, ky
 	}
 }
 
-// GetRenewalAlerts returns renewal alerts for the requester
-func (h *Handlers) GetRenewalAlerts(w http.ResponseWriter, r *http.Request) {
-	requesterID := r.URL.Query().Get("requester_id")
+// ================= Renewal Alert =================
 
+// // GetRenewalAlerts returns renewal alerts for the requester
+// func (h *Handlers) GetRenewalAlerts(w http.ResponseWriter, r *http.Request) {
+// 	requesterID := r.URL.Query().Get("requester_id")
+
+// 	if h.storage == nil {
+// 		SendError(w, http.StatusServiceUnavailable, "storage not available")
+// 		return
+// 	}
+
+// 	var alerts []*models.RenewalAlert
+// 	var err error
+
+// 	if requesterID != "" {
+// 		alerts, err = h.storage.GetRenewalAlertsByRequester(requesterID)
+// 	} else {
+// 		alerts, err = h.storage.GetPendingRenewalAlerts()
+// 	}
+
+// 	if err != nil {
+// 		SendInternalError(w, "failed to get renewal alerts:  "+err.Error())
+// 		return
+// 	}
+
+// 	SendSuccess(w, "", map[string]interface{}{
+// 		"alerts": alerts,
+// 		"count":  len(alerts),
+// 	})
+// }
+
+// GetRenewalAlerts returns renewal alerts for the requester (supports filtering by requester_id)
+// GET /api/v1/alerts/renewal?requester_id=X
+func (h *Handlers) GetRenewalAlerts(w http.ResponseWriter, r *http.Request) {
 	if h.storage == nil {
 		SendError(w, http.StatusServiceUnavailable, "storage not available")
 		return
 	}
 
-	var alerts []*models.RenewalAlert
-	var err error
+	requesterID := r.URL.Query().Get("requester_id")
 
-	if requesterID != "" {
-		alerts, err = h.storage.GetRenewalAlertsByRequester(requesterID)
-	} else {
-		alerts, err = h.storage.GetPendingRenewalAlerts()
-	}
-
+	alerts, err := h.storage.GetRenewalAlerts(requesterID)
 	if err != nil {
-		SendInternalError(w, "failed to get renewal alerts:  "+err.Error())
+		SendInternalError(w, "failed to get renewal alerts: "+err.Error())
 		return
 	}
+	if alerts == nil {
+		alerts = []*models.RenewalAlert{}
+	}
+
+	// Audit: who is reading renewal alerts
+	h.audit(r, "RENEWAL_ALERT_LIST", ResourceAlert, "", map[string]interface{}{
+		"requester_id": requesterID,
+		"count":        len(alerts),
+	})
 
 	SendSuccess(w, "", map[string]interface{}{
 		"alerts": alerts,
@@ -2368,6 +2410,7 @@ func (h *Handlers) GetRenewalAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 // ConfigureRenewalAlert configures webhook/email for renewal alerts
+// POST /api/v1/alerts/renewal/configure
 func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request) {
 	var req ConfigureRenewalAlertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2380,8 +2423,90 @@ func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if req.WebhookURL == "" && req.EmailRecipient == "" {
-		SendBadRequest(w, "webhook_url or email_recipient is required")
+	// if req.WebhookURL == "" && req.EmailRecipient == "" {
+	// 	SendBadRequest(w, "webhook_url or email_recipient is required")
+	// 	return
+	// }
+
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	// // Update alerts for this certificate
+	// err := h.storage.UpdateRenewalAlertConfig(req.CertificateID, req.WebhookURL, req.EmailRecipient)
+	// if err != nil {
+	// 	SendInternalError(w, "failed to configure alerts: "+err.Error())
+	// 	return
+	// }
+
+	// Defaults
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+	delivery := req.Delivery
+	if delivery == "" {
+		// Infer from provided URLs
+		hasEmail := req.EmailRecipient != ""
+		hasWebhook := req.WebhookURL != ""
+		switch {
+		case hasEmail && hasWebhook:
+			delivery = "both"
+		case hasEmail:
+			delivery = "email"
+		case hasWebhook:
+			delivery = "webhook"
+		default:
+			delivery = "none"
+		}
+	}
+	sendInterval := req.SendInterval
+	if sendInterval == "" {
+		sendInterval = "immediate"
+	}
+
+	if err := h.storage.UpdateRenewalAlertFullConfig(
+		req.CertificateID,
+		req.WebhookURL,
+		req.EmailRecipient,
+		isActive,
+		delivery,
+		sendInterval,
+	); err != nil {
+		SendInternalError(w, "failed to configure alerts: "+err.Error())
+		return
+	}
+
+	h.audit(r, "RENEWAL_ALERT_CONFIGURED", "RENEWAL_ALERT", req.CertificateID, map[string]interface{}{
+		"certificate_id": req.CertificateID,
+		"delivery":       delivery,
+		"send_interval":  sendInterval,
+		"is_active":      isActive,
+		"has_webhook":    req.WebhookURL != "",
+		"has_email":      req.EmailRecipient != "",
+	})
+
+	SendSuccess(w, "Renewal alert configured", map[string]interface{}{
+		"certificate_id": req.CertificateID,
+		"delivery":       delivery,
+		"send_interval":  sendInterval,
+		"is_active":      isActive,
+	})
+}
+
+// SendRenewalAlert — manual dispatch
+// POST /api/v1/alerts/renewal/send
+// Body: { certificate_id, alert_id }
+func (h *Handlers) SendRenewalAlert(w http.ResponseWriter, r *http.Request) {
+	var req SendRenewalAlertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	if req.CertificateID == "" && req.AlertID == "" {
+		SendBadRequest(w, "certificate_id or alert_id is required")
 		return
 	}
 
@@ -2390,17 +2515,115 @@ func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Update alerts for this certificate
-	err := h.storage.UpdateRenewalAlertConfig(req.CertificateID, req.WebhookURL, req.EmailRecipient)
+	// Find the alert
+	allAlerts, err := h.storage.GetRenewalAlerts("")
 	if err != nil {
-		SendInternalError(w, "failed to configure alerts: "+err.Error())
+		SendInternalError(w, "failed to load alerts: "+err.Error())
 		return
 	}
 
-	SendSuccess(w, "Renewal alerts configured successfully", map[string]interface{}{
-		"certificate_id":  req.CertificateID,
-		"webhook_url":     req.WebhookURL,
-		"email_recipient": req.EmailRecipient,
+	// // Fetch the alert to get delivery config
+	// alerts, err := h.storage.GetRenewalAlertsByRequester("") // pass empty for all
+	// if err != nil {
+	// 	SendInternalError(w, "failed to load alerts: "+err.Error())
+	// 	return
+	// }
+
+	var target *models.RenewalAlert
+	for _, a := range allAlerts {
+		if (req.AlertID != "" && a.ID == req.AlertID) ||
+			(req.CertificateID != "" && a.CertificateID == req.CertificateID) {
+			target = a
+			break
+		}
+	}
+
+	if target == nil {
+		SendNotFound(w, "renewal alert not found")
+		return
+	}
+
+	if !target.IsActive {
+		SendBadRequest(w, "alert is disabled — enable it first")
+		return
+	}
+
+	// sent := false
+	dispatchStatus := "SENT"
+	errs := []string{}
+
+	// ── Dispatch to webhook ──────────────────────────────────────────────────
+	if target.WebhookURL != "" &&
+		(target.Delivery == "webhook" || target.Delivery == "both") {
+
+		payload := map[string]interface{}{
+			"id":             target.ID,
+			"certificate_id": target.CertificateID,
+			"customer_id":    target.CustomerID,
+			"requester_id":   target.RequesterID,
+			"alert_type":     target.AlertType,
+			"expires_at":     target.CertExpiresAt,
+			"manual_send":    true,
+			"sent_at":        time.Now().Unix(),
+		}
+		body, _ := json.Marshal(payload)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, httpErr := client.Post(target.WebhookURL, "application/json", bytes.NewReader(body))
+		if httpErr != nil {
+			errs = append(errs, "webhook: "+httpErr.Error())
+			dispatchStatus = "FAILED"
+		} else {
+			resp.Body.Close()
+			// sent = true
+		}
+	}
+
+	// ── Email placeholder ────────────────────────────────────────────────────
+	// Wire to your SMTP/SES client here.  For now we just log it.
+	if target.EmailRecipient != "" &&
+		(target.Delivery == "email" || target.Delivery == "both") {
+
+		log.Printf("[SendRenewalAlert] EMAIL to %s: cert %s expires %s",
+			target.EmailRecipient,
+			target.CertificateID,
+			time.Unix(target.CertExpiresAt, 0).Format("2006-01-02"),
+		)
+		// sent = true
+		// TODO: replace log with actual email send:
+		// emailService.Send(target.EmailRecipient, subject, body)
+	}
+
+	// Mark as sent in DB
+	// if sent {
+	// 	h.storage.SendRenewalAlertNow(target.ID)
+	// }
+	if markErr := h.storage.MarkRenewalAlertSent(target.ID, dispatchStatus); markErr != nil {
+		log.Printf("[SendRenewalAlert] failed to mark status: %v", markErr)
+	}
+
+	h.audit(r, "RENEWAL_ALERT_SENT_MANUAL", ResourceAlert, target.CertificateID, map[string]interface{}{
+		"alert_id":       target.ID,
+		"certificate_id": target.CertificateID,
+		"customer_id":    target.CustomerID,
+		"delivery":       target.Delivery,
+		"status":         dispatchStatus,
+	})
+
+	if len(errs) > 0 {
+		SendSuccess(w, "Alert dispatch failed", map[string]interface{}{
+			"sent":   dispatchStatus,
+			"errors": errs,
+		})
+		return
+	}
+
+	SendSuccess(w, "Renewal alert sent successfully", map[string]interface{}{
+		"certificate_id": target.CertificateID,
+		"alert_id":       target.ID,
+		"sent_to":        target.Delivery,
+		"status":         dispatchStatus,
+		"sent_at":        time.Now().Unix(),
 	})
 }
 

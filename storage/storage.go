@@ -62,10 +62,22 @@ type Storage interface {
 
 	// Renewal Alert operations
 	SaveRenewalAlert(alert *models.RenewalAlert) error
-	GetPendingRenewalAlerts() ([]*models.RenewalAlert, error)
-	UpdateRenewalAlertStatus(alertID string, status models.RenewalAlertStatus) error
-	UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error
-	GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error)
+	GetRenewalAlerts(requesterID string) ([]*models.RenewalAlert, error)
+	GetPendingRenewalAlerts(before int64) ([]*models.RenewalAlert, error)
+	// UpdateRenewalAlertStatus(alertID string, status models.RenewalAlertStatus) error
+	// UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error
+	UpdateRenewalAlertFullConfig(
+		certificateID string,
+		webhookURL string,
+		emailRecipient string,
+		isActive bool,
+		delivery string,
+		sendInterval string,
+	) error
+	MarkRenewalAlertSent(alertID string, status string) error // SENT or FAILED
+	DeactivateRenewalAlerts(customerID string) error          // Called after a new cert is saved — deactivates pending renewal alerts
+	// SendRenewalAlertNow(alertID string) error
+	// GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error)
 
 	// Requester Key operations
 	SaveRequesterKey(key *models.RequesterKeyInfo) error
@@ -83,6 +95,4 @@ type Storage interface {
 	ListCertificates(requesterID string, limit int, includeHistory bool) ([]*models.VerificationCertificate, error)
 	// Called after a new cert is saved — deactivates older certs for same customer+requester
 	DeactivateOldCertificates(customerID, requesterID, newCertificateID string) error
-	// Called after a new cert is saved — deactivates pending renewal alerts
-	DeactivateRenewalAlerts(customerID string) error
 }

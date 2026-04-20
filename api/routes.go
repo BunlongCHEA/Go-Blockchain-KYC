@@ -127,6 +127,11 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			http.HandlerFunc(handlers.ConfigureRenewalAlert)))
 
+	// Manual alert dispatch
+	mux.Handle("POST /api/v1/alerts/renewal/send",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.SendRenewalAlert)))
+
 	// ==================== Requester Key & Certificate Routes
 
 	mux.Handle("POST /api/v1/keys/generate",

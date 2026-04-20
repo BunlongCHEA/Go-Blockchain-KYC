@@ -1557,82 +1557,109 @@ func (p *PostgresStorage) LoadAllBanks() ([]*models.Bank, error) {
 
 // ==================== Renewal Alert Operations ====================
 
-// SaveRenewalAlert saves a renewal alert
-func (p *PostgresStorage) SaveRenewalAlert(alert *models.RenewalAlert) error {
-	query := `
-		INSERT INTO renewal_alerts (id, certificate_id, customer_id, requester_id, alert_type, 
-			alert_date, cert_expires_at, status, webhook_url, email_recipient, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, sent_at = EXCLUDED.sent_at
-	`
+// ── common SELECT columns (used in every query)
+const renewalAlertCols = `
+	id, certificate_id, customer_id, requester_id, alert_type,
+	alert_date, cert_expires_at, status,
+	COALESCE(webhook_url,''), COALESCE(email_recipient,''),
+	COALESCE(sent_at, 0),
+	is_active, COALESCE(delivery,'none'), COALESCE(send_interval,'immediate'),
+	created_at`
 
-	_, err := p.db.Exec(query,
-		alert.ID,
-		alert.CertificateID,
-		alert.CustomerID,
-		alert.RequesterID,
-		alert.AlertType,
-		alert.AlertDate,
-		alert.CertExpiresAt,
-		alert.Status,
-		alert.WebhookURL,
-		alert.EmailRecipient,
-		alert.CreatedAt,
+// scanRenewalAlert scans a single renewal_alerts row (15 columns above).
+func scanRenewalAlert(row interface{ Scan(...interface{}) error }) (*models.RenewalAlert, error) {
+	a := &models.RenewalAlert{}
+	err := row.Scan(
+		&a.ID, &a.CertificateID, &a.CustomerID, &a.RequesterID, &a.AlertType,
+		&a.AlertDate, &a.CertExpiresAt, &a.Status,
+		&a.WebhookURL, &a.EmailRecipient,
+		&a.SentAt,
+		&a.IsActive, &a.Delivery, &a.SendInterval,
+		&a.CreatedAt,
 	)
-
-	return err
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan renewal alert: %w", err)
+	}
+	return a, nil
 }
 
-// GetPendingRenewalAlerts gets alerts that need to be sent
-func (p *PostgresStorage) GetPendingRenewalAlerts() ([]*models.RenewalAlert, error) {
-	now := time.Now().Unix()
-
-	query := `
-		SELECT id, certificate_id, customer_id, requester_id, alert_type, 
-			alert_date, cert_expires_at, status, webhook_url, email_recipient, created_at
-		FROM renewal_alerts
-		WHERE status = 'PENDING' AND alert_date <= $1
-		ORDER BY alert_date ASC
-	`
-
-	rows, err := p.db.Query(query, now)
+// SaveRenewalAlert saves a renewal alert
+func (p *PostgresStorage) SaveRenewalAlert(a *models.RenewalAlert) error {
+	_, err := p.db.Exec(`
+		INSERT INTO renewal_alerts (
+			id, certificate_id, customer_id, requester_id, alert_type,
+			alert_date, cert_expires_at, status,
+			webhook_url, email_recipient,
+			is_active, delivery, send_interval,
+			created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT (id) DO NOTHING
+	`,
+		a.ID, a.CertificateID, a.CustomerID, a.RequesterID, a.AlertType,
+		a.AlertDate, a.CertExpiresAt, a.Status,
+		a.WebhookURL, a.EmailRecipient,
+		a.IsActive, a.Delivery, a.SendInterval,
+		a.CreatedAt,
+	)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to save renewal alert: %w", err)
+	}
+	return nil
+}
+
+// GetRenewalAlerts returns all active alerts, optionally filtered by requester.
+func (p *PostgresStorage) GetRenewalAlerts(requesterID string) ([]*models.RenewalAlert, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	base := `SELECT ` + renewalAlertCols + ` FROM renewal_alerts WHERE is_active = TRUE`
+	if requesterID != "" {
+		rows, err = p.db.Query(base+` AND requester_id = $1 ORDER BY alert_date ASC`, requesterID)
+	} else {
+		rows, err = p.db.Query(base + ` ORDER BY alert_date ASC`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query renewal alerts: %w", err)
 	}
 	defer rows.Close()
 
 	var alerts []*models.RenewalAlert
 	for rows.Next() {
-		alert := &models.RenewalAlert{}
-		var webhookURL, emailRecipient sql.NullString
-
-		err := rows.Scan(
-			&alert.ID,
-			&alert.CertificateID,
-			&alert.CustomerID,
-			&alert.RequesterID,
-			&alert.AlertType,
-			&alert.AlertDate,
-			&alert.CertExpiresAt,
-			&alert.Status,
-			&webhookURL,
-			&emailRecipient,
-			&alert.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
+		a, scanErr := scanRenewalAlert(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-
-		if webhookURL.Valid {
-			alert.WebhookURL = webhookURL.String
-		}
-		if emailRecipient.Valid {
-			alert.EmailRecipient = emailRecipient.String
-		}
-
-		alerts = append(alerts, alert)
+		alerts = append(alerts, a)
 	}
+	return alerts, nil
+}
 
+// GetPendingRenewalAlerts returns active, unsent alerts whose alert_date has passed.
+// Called by the background scheduler.
+func (p *PostgresStorage) GetPendingRenewalAlerts(before int64) ([]*models.RenewalAlert, error) {
+	rows, err := p.db.Query(
+		`SELECT `+renewalAlertCols+`
+		 FROM   renewal_alerts
+		 WHERE  is_active  = TRUE
+		 AND    status     = 'PENDING'
+		 AND    alert_date <= $1
+		 ORDER  BY alert_date ASC`,
+		before,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending alerts: %w", err)
+	}
+	defer rows.Close()
+
+	var alerts []*models.RenewalAlert
+	for rows.Next() {
+		a, scanErr := scanRenewalAlert(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		alerts = append(alerts, a)
+	}
 	return alerts, nil
 }
 
@@ -1646,73 +1673,146 @@ func (p *PostgresStorage) UpdateRenewalAlertStatus(alertID string, status models
 	return err
 }
 
-// UpdateRenewalAlertConfig updates webhook/email for certificate alerts
-func (p *PostgresStorage) UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error {
-	query := `
-		UPDATE renewal_alerts 
-		SET webhook_url = $1, email_recipient = $2 
-		WHERE certificate_id = $3 AND status = 'PENDING'
-	`
+// // UpdateRenewalAlertConfig updates webhook/email for certificate alerts
+// func (p *PostgresStorage) UpdateRenewalAlertConfig(certificateID, webhookURL, emailRecipient string) error {
+// 	query := `
+// 		UPDATE renewal_alerts
+// 		SET webhook_url = $1, email_recipient = $2
+// 		WHERE certificate_id = $3 AND status = 'PENDING'
+// 	`
 
-	_, err := p.db.Exec(query, webhookURL, emailRecipient, certificateID)
-	return err
-}
+// 	_, err := p.db.Exec(query, webhookURL, emailRecipient, certificateID)
+// 	return err
+// }
 
-// GetRenewalAlertsByRequester gets alerts for a specific requester
-func (p *PostgresStorage) GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error) {
-	query := `
-		SELECT id, certificate_id, customer_id, requester_id, alert_type, 
-			alert_date, cert_expires_at, status, webhook_url, email_recipient, sent_at, created_at
-		FROM renewal_alerts
-		WHERE requester_id = $1
-		ORDER BY alert_date DESC
-	`
-
-	rows, err := p.db.Query(query, requesterID)
+// UpdateRenewalAlertFullConfig updates all delivery config fields for a cert's alerts.
+func (p *PostgresStorage) UpdateRenewalAlertFullConfig(
+	certificateID string,
+	webhookURL string,
+	emailRecipient string,
+	isActive bool,
+	delivery string,
+	sendInterval string,
+) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    webhook_url     = $2,
+		       email_recipient = $3,
+		       is_active       = $4,
+		       delivery        = $5,
+		       send_interval   = $6
+		WHERE  certificate_id  = $1
+	`, certificateID, webhookURL, emailRecipient, isActive, delivery, sendInterval)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to update renewal alert config: %w", err)
 	}
-	defer rows.Close()
-
-	var alerts []*models.RenewalAlert
-	for rows.Next() {
-		alert := &models.RenewalAlert{}
-		var webhookURL, emailRecipient sql.NullString
-		var sentAt sql.NullInt64
-
-		err := rows.Scan(
-			&alert.ID,
-			&alert.CertificateID,
-			&alert.CustomerID,
-			&alert.RequesterID,
-			&alert.AlertType,
-			&alert.AlertDate,
-			&alert.CertExpiresAt,
-			&alert.Status,
-			&webhookURL,
-			&emailRecipient,
-			&sentAt,
-			&alert.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		if webhookURL.Valid {
-			alert.WebhookURL = webhookURL.String
-		}
-		if emailRecipient.Valid {
-			alert.EmailRecipient = emailRecipient.String
-		}
-		if sentAt.Valid {
-			alert.SentAt = &sentAt.Int64
-		}
-
-		alerts = append(alerts, alert)
-	}
-
-	return alerts, nil
+	return nil
 }
+
+// MarkRenewalAlertSent updates status + sent_at after a dispatch attempt.
+// status = "SENT" on success, "FAILED" on error.
+func (p *PostgresStorage) MarkRenewalAlertSent(alertID string, status string) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    status  = $2,
+		       sent_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  id      = $1
+	`, alertID, status)
+	if err != nil {
+		return fmt.Errorf("failed to mark alert as %s: %w", status, err)
+	}
+	return nil
+}
+
+// DeactivateRenewalAlerts marks all pending renewal alerts for a customer
+// as inactive when a new certificate is successfully issued.
+// This prevents stale "cert expiring" alerts from appearing after renewal.
+func (p *PostgresStorage) DeactivateRenewalAlerts(customerID string) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    is_active = FALSE
+		WHERE  customer_id = $1
+		AND    is_active   = TRUE
+		AND    status      = 'PENDING'
+	`, customerID)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate renewal alerts: %w", err)
+	}
+	return nil
+}
+
+// SendRenewalAlertNow marks an alert as "dispatch requested" by setting
+// a next_send_at = NOW() so the background worker picks it up immediately.
+// If you don't have a background worker yet, the handler below does the
+// HTTP call directly instead.
+func (p *PostgresStorage) SendRenewalAlertNow(alertID string) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    sent       = FALSE,          -- reset so it sends again
+		       alert_time = EXTRACT(EPOCH FROM NOW())::BIGINT  -- trigger immediately
+		WHERE  id         = $1
+		AND    is_active  = TRUE
+	`, alertID)
+	if err != nil {
+		return fmt.Errorf("failed to mark alert for immediate send: %w", err)
+	}
+	return nil
+}
+
+// // GetRenewalAlertsByRequester gets alerts for a specific requester
+// func (p *PostgresStorage) GetRenewalAlertsByRequester(requesterID string) ([]*models.RenewalAlert, error) {
+// 	query := `
+// 		SELECT id, certificate_id, customer_id, requester_id, alert_type, alert_date, cert_expires_at, status, webhook_url, email_recipient, sent_at, created_at
+// 		FROM renewal_alerts
+// 		WHERE requester_id = $1
+// 		ORDER BY alert_date DESC
+// 	`
+
+// 	rows, err := p.db.Query(query, requesterID)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer rows.Close()
+
+// 	var alerts []*models.RenewalAlert
+// 	for rows.Next() {
+// 		alert := &models.RenewalAlert{}
+// 		var webhookURL, emailRecipient sql.NullString
+// 		var sentAt sql.NullInt64
+
+// 		err := rows.Scan(
+// 			&alert.ID,
+// 			&alert.CertificateID,
+// 			&alert.CustomerID,
+// 			&alert.RequesterID,
+// 			&alert.AlertType,
+// 			&alert.AlertDate,
+// 			&alert.CertExpiresAt,
+// 			&alert.Status,
+// 			&webhookURL,
+// 			&emailRecipient,
+// 			&sentAt,
+// 			&alert.CreatedAt,
+// 		)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+
+// 		if webhookURL.Valid {
+// 			alert.WebhookURL = webhookURL.String
+// 		}
+// 		if emailRecipient.Valid {
+// 			alert.EmailRecipient = emailRecipient.String
+// 		}
+// 		if sentAt.Valid {
+// 			alert.SentAt = &sentAt.Int64
+// 		}
+
+// 		alerts = append(alerts, alert)
+// 	}
+
+// 	return alerts, nil
+// }
 
 // ==================== Requester Key Operations ====================
 
@@ -2030,22 +2130,6 @@ func (p *PostgresStorage) DeactivateOldCertificates(customerID, requesterID, new
 	`, customerID, requesterID, newCertificateID)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate old certificates: %w", err)
-	}
-	return nil
-}
-
-// DeactivateRenewalAlerts marks all pending renewal alerts for a customer
-// as inactive when a new certificate is successfully issued.
-// This prevents stale "cert expiring" alerts from appearing after renewal.
-func (p *PostgresStorage) DeactivateRenewalAlerts(customerID string) error {
-	_, err := p.db.Exec(`
-		UPDATE renewal_alerts
-		SET    is_active = FALSE
-		WHERE  customer_id = $1
-		AND    is_active   = TRUE
-	`, customerID)
-	if err != nil {
-		return fmt.Errorf("failed to deactivate renewal alerts: %w", err)
 	}
 	return nil
 }

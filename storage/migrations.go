@@ -137,6 +137,8 @@ var Migrations = []string{
 		email_recipient VARCHAR(255),
 		sent_at BIGINT,
 		is_active BOOLEAN NOT NULL DEFAULT TRUE,
+		delivery VARCHAR(10) NOT NULL DEFAULT 'none',
+		send_interval VARCHAR(10) NOT NULL DEFAULT 'immediate',
 		created_at BIGINT NOT NULL
 	)`,
 
@@ -194,18 +196,24 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_is_pending ON transactions(is_pending)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_kyc_records_status ON kyc_records(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_kyc_records_bank_id ON kyc_records(bank_id)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_status ON renewal_alerts(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_alert_date ON renewal_alerts(alert_date)`,
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_requester ON renewal_alerts(requester_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_is_active ON renewal_alerts(is_active)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_name ON requester_keys(key_name)`,
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_fingerprint ON requester_keys(fingerprint)`,
 	`CREATE INDEX IF NOT EXISTS idx_requester_keys_active ON requester_keys(is_active)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_certificates_customer   ON certificates(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_requester  ON certificates(requester_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_expires_at ON certificates(expires_at)`,
-	`CREATE INDEX IF NOT EXISTS idx_certificates_is_active   ON certificates(customer_id, requester_id, is_active)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_is_active   ON certificates(is_active)`,
 }

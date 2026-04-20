@@ -66,6 +66,12 @@ func (s *Server) Start() error {
 	// Setup routes
 	router := SetupRoutes(handlers, middleware)
 
+	// Start the renewal alert background scheduler.
+	// It polls every 5 min for alerts whose alert_date has passed and dispatches them via webhook / email according to each alert's delivery + send_interval.
+	scheduler := NewAlertScheduler(handlers)
+	scheduler.Start()
+	defer scheduler.Stop()
+
 	// Configure server
 	addr := fmt.Sprintf("%s:%d", s.config.Server.Host, s.config.Server.Port)
 	s.httpServer = &http.Server{

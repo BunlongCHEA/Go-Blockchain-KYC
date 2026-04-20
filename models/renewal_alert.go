@@ -28,8 +28,13 @@ type RenewalAlert struct {
 	Status         RenewalAlertStatus `json:"status"`
 	WebhookURL     string             `json:"webhook_url,omitempty"`
 	EmailRecipient string             `json:"email_recipient,omitempty"`
-	SentAt         *int64             `json:"sent_at,omitempty"`
-	CreatedAt      int64              `json:"created_at"`
+	SentAt         int64              `json:"sent_at"`
+
+	IsActive     bool   `json:"is_active"`
+	Delivery     string `json:"delivery"`      // email | webhook | both | none
+	SendInterval string `json:"send_interval"` // immediate | daily | weekly
+
+	CreatedAt int64 `json:"created_at"`
 }
 
 // NewRenewalAlert creates a new renewal alert
