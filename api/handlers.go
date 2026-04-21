@@ -75,6 +75,8 @@ type ConfigureRenewalAlertRequest struct {
 	IsActive       *bool  `json:"is_active,omitempty"`
 	Delivery       string `json:"delivery,omitempty"`      // email|webhook|both|none
 	SendInterval   string `json:"send_interval,omitempty"` // immediate|daily|weekly
+	// target a single alert row instead of all rows for the cert
+	AlertID string `json:"alert_id,omitempty"`
 }
 
 // SendRenewalAlertRequest — manual dispatch
@@ -2426,33 +2428,53 @@ func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if req.CertificateID == "" {
-		SendBadRequest(w, "certificate_id is required")
+	if req.CertificateID == "" && req.AlertID == "" {
+		SendBadRequest(w, "certificate_id or alert_id is required")
 		return
 	}
-
-	// if req.WebhookURL == "" && req.EmailRecipient == "" {
-	// 	SendBadRequest(w, "webhook_url or email_recipient is required")
-	// 	return
-	// }
 
 	if h.storage == nil {
 		SendError(w, http.StatusServiceUnavailable, "storage not available")
 		return
 	}
 
-	// // Update alerts for this certificate
-	// err := h.storage.UpdateRenewalAlertConfig(req.CertificateID, req.WebhookURL, req.EmailRecipient)
-	// if err != nil {
-	// 	SendInternalError(w, "failed to configure alerts: "+err.Error())
-	// 	return
-	// }
+	// ── CASE A: single-row toggle (alert_id provided) ─────────────────────
+	// The UI uses this when toggling is_active for a specific alert row.
+	// Only updates is_active — does NOT touch delivery/webhook/email.
+	if req.AlertID != "" && req.IsActive != nil &&
+		req.WebhookURL == "" && req.EmailRecipient == "" && req.Delivery == "" {
+
+		if err := h.storage.UpdateRenewalAlertIsActive(req.AlertID, *req.IsActive); err != nil {
+			SendInternalError(w, "failed to update alert: "+err.Error())
+			return
+		}
+
+		h.audit(r, "RENEWAL_ALERT_TOGGLED", ResourceAlert, req.AlertID, map[string]interface{}{
+			"alert_id":  req.AlertID,
+			"is_active": *req.IsActive,
+		})
+
+		SendSuccess(w, "Alert updated", map[string]interface{}{
+			"alert_id":  req.AlertID,
+			"is_active": *req.IsActive,
+		})
+		return
+	}
+
+	// ── CASE B: full config update (certificate_id, bulk or with AlertID) ──
+	// Updates delivery, webhook, email, interval, is_active for all alerts
+	// belonging to the certificate — or just the one if alert_id is provided.
+	if req.CertificateID == "" {
+		SendBadRequest(w, "certificate_id is required for full configuration")
+		return
+	}
 
 	// Defaults
 	isActive := true
 	if req.IsActive != nil {
 		isActive = *req.IsActive
 	}
+
 	delivery := req.Delivery
 	if delivery == "" {
 		// Infer from provided URLs

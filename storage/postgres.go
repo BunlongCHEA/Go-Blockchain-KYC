@@ -1709,6 +1709,19 @@ func (p *PostgresStorage) UpdateRenewalAlertFullConfig(
 	return nil
 }
 
+// UpdateRenewalAlertIsActive sets is_active on a single row identified by id.
+func (p *PostgresStorage) UpdateRenewalAlertIsActive(alertID string, isActive bool) error {
+	_, err := p.db.Exec(`
+		UPDATE renewal_alerts
+		SET    is_active = $2
+		WHERE  id        = $1
+	`, alertID, isActive)
+	if err != nil {
+		return fmt.Errorf("failed to update alert is_active: %w", err)
+	}
+	return nil
+}
+
 // MarkRenewalAlertSent updates status + sent_at after a dispatch attempt.
 // status = "SENT" on success, "FAILED" on error.
 func (p *PostgresStorage) MarkRenewalAlertSent(alertID string, status string) error {

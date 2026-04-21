@@ -74,6 +74,7 @@ type Storage interface {
 		delivery string,
 		sendInterval string,
 	) error
+	UpdateRenewalAlertIsActive(alertID string, isActive bool) error
 	MarkRenewalAlertSent(alertID string, status string) error // SENT or FAILED
 	DeactivateRenewalAlerts(customerID string) error          // Called after a new cert is saved — deactivates pending renewal alerts
 	// SendRenewalAlertNow(alertID string) error
