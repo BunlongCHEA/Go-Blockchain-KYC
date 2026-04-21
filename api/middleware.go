@@ -51,9 +51,28 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 
 		// Record activity for monitoring
 		if m.monitoring != nil {
+			// Read userID from the enriched context (set by Authenticate)
+			// For unauthenticated routes r.Context() has no user — use path-based label.
 			userID := "anonymous"
-			if user, ok := GetUserFromContext(r); ok {
+			if user, ok := GetUserFromContext(r); ok && user != nil {
 				userID = user.ID
+			} else {
+				// For login/register, label by action so it's not just "anonymous"
+				switch {
+				case strings.Contains(r.URL.Path, "/auth/login"):
+					userID = "auth:login"
+				case strings.Contains(r.URL.Path, "/auth/register"):
+					userID = "auth:register"
+				case strings.Contains(r.URL.Path, "/certificate/verify"):
+					userID = "public:verify"
+				case r.URL.Path == "/health":
+					return // ← skip health check entirely from audit
+				}
+			}
+
+			// Skip health check noise entirely
+			if r.URL.Path == "/health" || r.URL.Path == "/" {
+				return
 			}
 
 			activity := monitoring.UserActivity{

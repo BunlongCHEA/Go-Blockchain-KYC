@@ -196,13 +196,21 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.authService.Login(&req)
 	if err != nil {
+		// ALSO audit failed logins — important for brute-force detection
+		h.audit(r, "LOGIN_FAILED", ResourceAuth, req.Username, map[string]interface{}{
+			"username": req.Username,
+			"reason":   err.Error(),
+		})
+
 		SendUnauthorized(w, err.Error())
 		return
 	}
 
-	// Audit log
-	h.audit(r, ActionLogin, ResourceAuth, req.Username, map[string]interface{}{
+	// Audit log: include user.ID from the LoginResponse, not just username
+	h.audit(r, ActionLogin, ResourceAuth, response.User.ID, map[string]interface{}{
 		"username": req.Username,
+		"user_id":  response.User.ID, // Foreign-Key
+		"role":     response.User.Role,
 	})
 
 	SendSuccess(w, "login successful", response)

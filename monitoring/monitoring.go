@@ -66,15 +66,18 @@ type UserActivity struct {
 }
 
 // UserActivityStats holds statistics for anomaly detection
+// Track "unusual time already alerted today" per user to prevent flooding.
 type UserActivityStats struct {
-	UserID            string
-	RequestCount      int
-	FailedAuthCount   int
-	UniqueIPAddresses map[string]int
-	AccessTimes       []time.Time
-	ResourcesAccessed map[string]int
-	LastActivity      time.Time
-	SuspiciousScore   float64
+	UserID               string
+	RequestCount         int
+	FailedAuthCount      int
+	UniqueIPAddresses    map[string]int
+	AccessTimes          []time.Time
+	ResourcesAccessed    map[string]int
+	LastActivity         time.Time
+	SuspiciousScore      float64
+	LastUnusualTimeAlert time.Time // when we last fired AnomalyUnusualTime
+	LastFrequencyAlert   time.Time // when we last fired AnomalyHighFrequency
 }
 
 // ==================== Storage Interface ====================
@@ -220,13 +223,18 @@ func (m *MonitoringService) recordAuditLog(activity UserActivity) {
 // detectAnomalies checks for various anomaly patterns
 func (m *MonitoringService) detectAnomalies(activity UserActivity, stats *UserActivityStats) {
 	// Check high frequency access
+	// High Frequency: only alert if not alerted in last 5 min
 	if m.checkHighFrequency(stats) {
-		m.createAlert(activity, AnomalyHighFrequency, RiskMedium,
-			"Unusually high request frequency detected",
-			map[string]interface{}{
-				"request_count": stats.RequestCount,
-				"threshold":     m.config.MaxRequestsPerMinute,
-			})
+		if time.Since(stats.LastFrequencyAlert) > 5*time.Minute {
+			stats.LastFrequencyAlert = time.Now()
+
+			m.createAlert(activity, AnomalyHighFrequency, RiskMedium,
+				"Unusually high request frequency detected",
+				map[string]interface{}{
+					"request_count": stats.RequestCount,
+					"threshold":     m.config.MaxRequestsPerMinute,
+				})
+		}
 	}
 
 	// Check multiple failed auth
@@ -240,16 +248,25 @@ func (m *MonitoringService) detectAnomalies(activity UserActivity, stats *UserAc
 	}
 
 	// Check unusual access time
+	// Unusual Time: only alert once per day
 	if m.checkUnusualTime(activity.Timestamp) {
-		m.createAlert(activity, AnomalyUnusualTime, RiskLow,
-			"Access outside normal working hours",
-			map[string]interface{}{
-				"access_time": activity.Timestamp.Format("15:04:05"),
-				"working_hours": map[string]int{
-					"start": m.config.WorkingHoursStart,
-					"end":   m.config.WorkingHoursEnd,
-				},
-			})
+		today := time.Now().Truncate(24 * time.Hour)
+
+		// not alerted yet today
+		if stats.LastUnusualTimeAlert.Before(today) {
+			stats.LastUnusualTimeAlert = time.Now()
+
+			m.createAlert(activity, AnomalyUnusualTime, RiskLow,
+				"Access outside normal working hours",
+				map[string]interface{}{
+					"access_time": activity.Timestamp.Format("15:04:05"),
+					"working_hours": map[string]int{
+						"start": m.config.WorkingHoursStart,
+						"end":   m.config.WorkingHoursEnd,
+					},
+				})
+		}
+		// else: already alerted today — skip
 	}
 
 	// Check multiple IP addresses
@@ -376,6 +393,14 @@ func (m *MonitoringService) createAlert(activity UserActivity, anomalyType Anoma
 // saveAlertToAuditLog saves alert to audit_log table
 func (m *MonitoringService) saveAlertToAuditLog(alert *AnomalyAlert) {
 	if m.storage == nil {
+		return
+	}
+
+	// ── FILTER: only persist HIGH and CRITICAL to audit_log ──────────────────
+	// LOW  = unusual access time, minor frequency blips → too noisy for DB
+	// MEDIUM = high frequency → in-memory only unless it escalates
+	// HIGH + CRITICAL = failed auth, bulk access, suspicious score → always persist
+	if alert.RiskLevel != RiskHigh && alert.RiskLevel != RiskCritical {
 		return
 	}
 
