@@ -107,6 +107,7 @@ var Migrations = []string{
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		last_login TIMESTAMP,
+		customer_id VARCHAR(50) DEFAULT NULL,
 		FOREIGN KEY (bank_id) REFERENCES banks(id) ON DELETE SET NULL
 	)`,
 
@@ -192,7 +193,12 @@ var Migrations = []string{
 	// 	ADD COLUMN IF NOT EXISTS verified_by VARCHAR(100),
 	// 	ADD COLUMN IF NOT EXISTS verification_date BIGINT;`,
 
+	`ALTER TABLE users
+		ADD COLUMN IF NOT EXISTS customer_id VARCHAR(50) DEFAULT NULL`,
+
 	// Create indexes
+	`CREATE INDEX IF NOT EXISTS idx_users_customer_id ON users(customer_id)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_transactions_is_pending ON transactions(is_pending)`,

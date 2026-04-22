@@ -17,6 +17,7 @@ type User struct {
 	PasswordSalt           string    `json:"-"`
 	Role                   Role      `json:"role"`
 	BankID                 string    `json:"bank_id,omitempty"`
+	CustomerID             string    `json:"customer_id,omitempty"` // KYC customer hash
 	IsActive               bool      `json:"is_active"`
 	IsDeleted              bool      `json:"is_deleted"`
 	PasswordChangeRequired bool      `json:"password_change_required"`

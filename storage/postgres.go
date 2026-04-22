@@ -1069,6 +1069,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 			password_salt,
 			role,
 			bank_id,
+			customer_id,
 			is_active,
 			is_deleted,
 			password_change_required,
@@ -1077,7 +1078,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 			updated_at,
 			last_login
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14. $15
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			email                    = EXCLUDED.email,
@@ -1085,6 +1086,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 			password_salt            = EXCLUDED.password_salt,
 			role                     = EXCLUDED.role,
 			bank_id                  = EXCLUDED.bank_id,
+			customer_id              = EXCLUDED.customer_id,
 			is_active                = EXCLUDED.is_active,
 			is_deleted               = EXCLUDED.is_deleted,
 			password_change_required = EXCLUDED.password_change_required,
@@ -1107,6 +1109,7 @@ func (p *PostgresStorage) SaveUser(user *auth.User) error {
 		user.PasswordSalt,
 		string(user.Role),
 		nullableString(user.BankID),
+		nullableString(user.CustomerID),
 		user.IsActive,
 		user.IsDeleted,
 		user.PasswordChangeRequired,
@@ -1134,6 +1137,7 @@ func (p *PostgresStorage) GetUserByUsername(username string) (*auth.User, error)
 			password_salt,
 			role,
 			COALESCE(bank_id, ''),
+			COALESCE(customer_id, ''),
 			is_active,
 			COALESCE(password_change_required, TRUE),
 			COALESCE(login_count, 0),
@@ -1156,6 +1160,7 @@ func (p *PostgresStorage) GetUserByUsername(username string) (*auth.User, error)
 		&user.PasswordSalt,
 		&role,
 		&user.BankID,
+		&user.CustomerID,
 		&user.IsActive,
 		&user.PasswordChangeRequired,
 		&user.LoginCount,
@@ -1183,7 +1188,7 @@ func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
 	query := `
 		SELECT
 			id, username, email, password_hash, password_salt, role,
-			COALESCE(bank_id, ''), is_active,
+			COALESCE(bank_id, ''), COALESCE(customer_id, ''), is_active,
 			COALESCE(is_deleted,FALSE),
 			COALESCE(password_change_required, TRUE),
 			COALESCE(login_count, 0),
@@ -1209,7 +1214,7 @@ func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
 		err := rows.Scan(
 			&user.ID, &user.Username, &user.Email,
 			&user.PasswordHash, &user.PasswordSalt, &role,
-			&user.BankID, &user.IsActive, &user.IsDeleted,
+			&user.BankID, &user.CustomerID, &user.IsActive, &user.IsDeleted,
 			&user.PasswordChangeRequired, &user.LoginCount,
 			&user.CreatedAt, &user.UpdatedAt, &lastLogin,
 		)

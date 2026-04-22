@@ -557,6 +557,15 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 			SendInternalError(w, fmt.Sprintf("failed to save KYC to database: %v", err))
 			return
 		}
+		// Link KYC customer_id to user so /kyc/me can resolve the record.
+		// customer_id is a hash (GenerateCustomerID) ≠ user.ID, so we store
+		// it on the user row. Only customer-role users need this link.
+		if user.Role == auth.RoleCustomer {
+			user.CustomerID = customerID
+			if linkErr := h.storage.SaveUser(user); linkErr != nil {
+				log.Printf("[CreateKYC] Warning: could not link customer_id to user: %v", linkErr)
+			}
+		}
 	}
 
 	// Audit log
@@ -4012,18 +4021,25 @@ func (h *Handlers) GetMyKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// customer_id is derived from the user's ID (set during KYC creation)
-	// Try user.ID first, fall back to querying by user.Username
-	customerID := user.ID
+	// customer_id is stored on the user record by CreateKYC (CHANGE 4a above).
+	// It is a hash (utils.GenerateCustomerID) ≠ user.ID / user.Username.
+	// Fall back to user.ID and user.Username only for records created before
+	// this fix was deployed (backward compatibility).
+	var customerID string
+	if user.CustomerID != "" {
+		customerID = user.CustomerID
+	} else {
+		customerID = user.ID // backward compat fallback
+	}
 
 	kyc, err := h.blockchain.ReadKYC(customerID, true)
-	if err != nil {
-		// Try looking up by username as customer_id (some flows use username)
+	if err != nil && user.CustomerID == "" {
+		// Last resort: try username (old behavior)
 		kyc, err = h.blockchain.ReadKYC(user.Username, true)
-		if err != nil {
-			SendNotFound(w, "no KYC record found for your account")
-			return
-		}
+	}
+	if err != nil {
+		SendNotFound(w, "no KYC record found for your account")
+		return
 	}
 
 	SendSuccess(w, "", map[string]interface{}{
@@ -4049,18 +4065,25 @@ func (h *Handlers) GetMyCertificates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get certificates where customer_id = user.ID
-	certs, err := h.storage.GetCertificatesByCustomer(user.ID)
-	if err != nil {
-		// Fallback to username
-		certs, err = h.storage.GetCertificatesByCustomer(user.Username)
-		if err != nil || len(certs) == 0 {
-			SendSuccess(w, "", map[string]interface{}{
-				"certificates": []interface{}{},
-				"count":        0,
-			})
-			return
-		}
+	// customer_id is stored on user.CustomerID (set by CreateKYC, CHANGE 4a).
+	// Fall back to user.ID and user.Username for backward compatibility.
+	lookupID := user.CustomerID
+	if lookupID == "" {
+		lookupID = user.ID
+	}
+	certs, err := h.storage.GetCertificatesByCustomer(lookupID)
+	if (err != nil || len(certs) == 0) && lookupID != user.Username {
+		certs, _ = h.storage.GetCertificatesByCustomer(user.Username)
+	}
+	if err != nil && len(certs) == 0 {
+		SendSuccess(w, "", map[string]interface{}{
+			"certificates": []interface{}{},
+			"count":        0,
+		})
+		return
+	}
+	if certs == nil {
+		certs = []*models.VerificationCertificate{}
 	}
 
 	SendSuccess(w, "", map[string]interface{}{
