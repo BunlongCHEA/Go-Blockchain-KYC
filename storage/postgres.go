@@ -2299,3 +2299,37 @@ func scanCertificateRow(rows *sql.Rows) (*models.VerificationCertificate, error)
 	}
 	return cert, nil
 }
+
+// ==================== Customer Operations ====================
+
+// GetCertificatesByCustomer returns all active certificates for a customer,
+// ordered newest first.
+func (p *PostgresStorage) GetCertificatesByCustomer(customerID string) ([]*models.VerificationCertificate, error) {
+	selectCols := `
+		SELECT certificate_id, customer_id, customer_name, requester_id,
+		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
+		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary,
+		       issued_at, expires_at, COALESCE(is_active, TRUE)
+		FROM   certificates
+		WHERE  customer_id = $1
+		AND    is_active   = TRUE
+		ORDER  BY issued_at DESC
+		LIMIT  10`
+
+	rows, err := p.db.Query(selectCols, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get customer certificates: %w", err)
+	}
+	defer rows.Close()
+
+	var certs []*models.VerificationCertificate
+	for rows.Next() {
+		cert, err := scanCertificateRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}

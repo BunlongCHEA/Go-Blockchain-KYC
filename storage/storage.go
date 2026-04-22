@@ -96,4 +96,7 @@ type Storage interface {
 	ListCertificates(requesterID string, limit int, includeHistory bool) ([]*models.VerificationCertificate, error)
 	// Called after a new cert is saved — deactivates older certs for same customer+requester
 	DeactivateOldCertificates(customerID, requesterID, newCertificateID string) error
+
+	// Returns all active certificates for a specific customer.
+	GetCertificatesByCustomer(customerID string) ([]*models.VerificationCertificate, error)
 }

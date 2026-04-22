@@ -67,6 +67,17 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// 		middleware.RequirePermission(auth.PermBankRead)(
 	// 			http.HandlerFunc(handlers.ListBanks))))
 
+	// Bank CRUD additions
+	mux.Handle("PUT /api/v1/banks",
+		middleware.Authenticate(
+			middleware.RequirePermission(auth.PermBankCreate)( // reuse create perm
+				http.HandlerFunc(handlers.UpdateBank))))
+
+	mux.Handle("DELETE /api/v1/banks",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.DeleteBank))))
+
 	// ==================== Blockchain Routes
 
 	// Blockchain Routes
@@ -293,6 +304,17 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.ResetUserPassword))))
+
+	// ==================== Customer Self-Service Routes
+
+	// Customer self-service
+	mux.Handle("GET /api/v1/kyc/me",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetMyKYC)))
+
+	mux.Handle("GET /api/v1/certificates/me",
+		middleware.Authenticate(
+			http.HandlerFunc(handlers.GetMyCertificates)))
 
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))

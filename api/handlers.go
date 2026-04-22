@@ -44,6 +44,19 @@ type Handlers struct {
 	config              *config.Config
 }
 
+// UpdateBankRequest — full or partial bank update
+type UpdateBankRequest struct {
+	BankID       string          `json:"bank_id"`
+	Name         string          `json:"name,omitempty"`
+	Code         string          `json:"code,omitempty"`
+	Country      string          `json:"country,omitempty"`
+	LicenseNo    string          `json:"license_no,omitempty"`
+	Address      *models.Address `json:"address,omitempty"`
+	ContactEmail string          `json:"contact_email,omitempty"`
+	ContactPhone string          `json:"contact_phone,omitempty"`
+	IsActive     *bool           `json:"is_active,omitempty"`
+}
+
 // IssueVerificationCertificateRequest represents request from external service
 type IssueVerificationCertificateRequest struct {
 	CustomerID      string `json:"customer_id"`
@@ -1034,6 +1047,116 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 		banks = append(banks, bank)
 	}
 	SendSuccess(w, "", banks)
+}
+
+// UpdateBank handles updating an existing bank record.
+// PUT /api/v1/banks
+func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
+	var req UpdateBankRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.BankID == "" {
+		SendBadRequest(w, "bank_id is required")
+		return
+	}
+
+	bank, err := h.blockchain.GetBank(req.BankID)
+	if err != nil {
+		SendNotFound(w, "bank not found")
+		return
+	}
+
+	// Apply partial updates
+	if req.Name != "" {
+		bank.Name = req.Name
+	}
+	if req.Code != "" {
+		bank.Code = req.Code
+	}
+	if req.Country != "" {
+		bank.Country = req.Country
+	}
+	if req.LicenseNo != "" {
+		bank.LicenseNo = req.LicenseNo
+	}
+	if req.ContactEmail != "" {
+		bank.ContactEmail = req.ContactEmail
+	}
+	if req.ContactPhone != "" {
+		bank.ContactPhone = req.ContactPhone
+	}
+	if req.Address != nil {
+		if req.Address.Street != "" {
+			bank.Address.Street = req.Address.Street
+		}
+		if req.Address.City != "" {
+			bank.Address.City = req.Address.City
+		}
+		if req.Address.State != "" {
+			bank.Address.State = req.Address.State
+		}
+		if req.Address.PostalCode != "" {
+			bank.Address.PostalCode = req.Address.PostalCode
+		}
+		if req.Address.Country != "" {
+			bank.Address.Country = req.Address.Country
+		}
+	}
+	if req.IsActive != nil {
+		bank.IsActive = *req.IsActive
+	}
+	bank.UpdatedAt = time.Now()
+
+	// Persist
+	if h.storage != nil {
+		if err := h.storage.SaveBank(bank); err != nil {
+			SendInternalError(w, "failed to update bank: "+err.Error())
+			return
+		}
+	}
+
+	// Update in-memory blockchain map
+	h.blockchain.Banks[req.BankID] = bank
+
+	h.audit(r, "BANK_UPDATED", "BANK", req.BankID, map[string]interface{}{
+		"bank_id": req.BankID,
+		"name":    bank.Name,
+	})
+
+	SendSuccess(w, "Bank updated successfully", bank)
+}
+
+// DeleteBank soft-deletes a bank (sets is_active=false, does not remove row).
+// DELETE /api/v1/banks
+func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
+	bankID := r.URL.Query().Get("bank_id")
+	if bankID == "" {
+		SendBadRequest(w, "bank_id is required")
+		return
+	}
+
+	bank, err := h.blockchain.GetBank(bankID)
+	if err != nil {
+		SendNotFound(w, "bank not found")
+		return
+	}
+
+	bank.IsActive = false
+	bank.UpdatedAt = time.Now()
+
+	if h.storage != nil {
+		h.storage.SaveBank(bank)
+	}
+	h.blockchain.Banks[bankID] = bank
+
+	h.audit(r, "BANK_DEACTIVATED", "BANK", bankID, map[string]interface{}{
+		"bank_id": bankID,
+		"name":    bank.Name,
+	})
+
+	SendSuccess(w, "Bank deactivated", map[string]interface{}{"bank_id": bankID})
 }
 
 // ==================== Blockchain Handlers ====================
@@ -3875,4 +3998,73 @@ func getUserIDFromContext(r *http.Request) string {
 		return "system"
 	}
 	return user.ID
+}
+
+// ── Customer self-service ──────────────────────────────────────────────────
+
+// GetMyKYC returns the authenticated customer's own KYC record.
+// The customer_id is stored as the user's ID (set during registration).
+// GET /api/v1/kyc/me
+func (h *Handlers) GetMyKYC(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	// customer_id is derived from the user's ID (set during KYC creation)
+	// Try user.ID first, fall back to querying by user.Username
+	customerID := user.ID
+
+	kyc, err := h.blockchain.ReadKYC(customerID, true)
+	if err != nil {
+		// Try looking up by username as customer_id (some flows use username)
+		kyc, err = h.blockchain.ReadKYC(user.Username, true)
+		if err != nil {
+			SendNotFound(w, "no KYC record found for your account")
+			return
+		}
+	}
+
+	SendSuccess(w, "", map[string]interface{}{
+		"kyc_data":      kyc,
+		"on_blockchain": kyc.IsOnBlockchain(),
+		"can_modify":    kyc.CanModify(),
+		"can_verify":    kyc.CanVerify(),
+	})
+}
+
+// GetMyCertificates returns certificates issued to the authenticated customer.
+// Looks up by customer_id in the certificates table.
+// GET /api/v1/certificates/me
+func (h *Handlers) GetMyCertificates(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	if h.storage == nil {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	// Get certificates where customer_id = user.ID
+	certs, err := h.storage.GetCertificatesByCustomer(user.ID)
+	if err != nil {
+		// Fallback to username
+		certs, err = h.storage.GetCertificatesByCustomer(user.Username)
+		if err != nil || len(certs) == 0 {
+			SendSuccess(w, "", map[string]interface{}{
+				"certificates": []interface{}{},
+				"count":        0,
+			})
+			return
+		}
+	}
+
+	SendSuccess(w, "", map[string]interface{}{
+		"certificates": certs,
+		"count":        len(certs),
+	})
 }
