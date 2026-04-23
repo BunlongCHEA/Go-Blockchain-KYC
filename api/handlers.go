@@ -445,11 +445,18 @@ func (h *Handlers) AutoVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update in database
+	// Update in database — preserve scan fields
 	kyc.Status = result.Status
 	kyc.RiskLevel = result.RiskLevel
 	if h.storage != nil {
-		h.storage.SaveKYC(kyc)
+		if err := h.storage.UpdateKYCStatus(
+			req.CustomerID,
+			result.Status,
+			user.ID,
+			time.Now().Unix(),
+		); err != nil {
+			log.Printf("[AutoVerifyKYC] DB update warning: %v", err)
+		}
 	}
 
 	// Audit log for auto-verification result
@@ -764,10 +771,16 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update in database
-	kyc.Status = models.StatusVerified
+	// Update in database — use targeted UPDATE to preserve scan fields
 	if h.storage != nil {
-		h.storage.SaveKYC(kyc)
+		if err := h.storage.UpdateKYCStatus(
+			req.CustomerID,
+			models.StatusVerified,
+			user.ID,           // verified_by = who clicked Verify
+			time.Now().Unix(), // verification_date = now
+		); err != nil {
+			log.Printf("[VerifyKYC] DB update warning: %v", err)
+		}
 	}
 
 	// Audit log for KYC verification
@@ -820,11 +833,15 @@ func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update in database
+	// Update in database — preserve scan fields
 	if h.storage != nil {
-		kyc, _ := h.blockchain.ReadKYC(req.CustomerID, false)
-		if kyc != nil {
-			h.storage.SaveKYC(kyc)
+		if err := h.storage.UpdateKYCStatus(
+			req.CustomerID,
+			models.StatusRejected,
+			user.ID,
+			time.Now().Unix(),
+		); err != nil {
+			log.Printf("[RejectKYC] DB update warning: %v", err)
 		}
 	}
 
@@ -3812,7 +3829,7 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 		"bank_admin":          true,
 		"bank_officer":        true,
 		"auditor":             true,
-		"integration_service": true, // ← NEW: NextJS gateway machine account
+		"integration_service": true, // NextJS gateway machine account
 	}
 	if !allowedRoles[req.Role] {
 		SendBadRequest(w, "role must be one of: bank_admin, bank_officer, auditor, integration_service")

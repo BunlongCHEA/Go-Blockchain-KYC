@@ -788,6 +788,39 @@ func (p *PostgresStorage) scanKYCRecords(rows *sql.Rows) ([]*models.KYCData, err
 	return records, nil
 }
 
+// UpdateKYCStatus updates ONLY status-related fields after manual verification/rejection.
+// All scan fields (document_hash, id_image_path, scan_score, ocr_result, etc.) and
+// review fields are preserved using COALESCE — they are NEVER overwritten with empty values.
+//
+// verified_by    = the user_id who performed the action (empty string → preserve existing)
+// verification_date = unix timestamp (0 → preserve existing)
+func (p *PostgresStorage) UpdateKYCStatus(
+	customerID string,
+	status models.KYCStatus,
+	verifiedBy string,
+	verificationDate int64,
+) error {
+	query := `
+		UPDATE kyc_records SET
+			status             = $2,
+			verified_by        = CASE WHEN $3 <> '' THEN $3    ELSE verified_by        END,
+			verification_date  = CASE WHEN $4 <> 0  THEN $4    ELSE verification_date  END,
+			updated_at         = $5
+		WHERE customer_id = $1
+	`
+	_, err := p.db.Exec(query,
+		customerID,
+		string(status),
+		verifiedBy,
+		verificationDate,
+		time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update KYC status: %w", err)
+	}
+	return nil
+}
+
 // ==================== Bank Operations ====================
 
 // SaveBank saves a bank record

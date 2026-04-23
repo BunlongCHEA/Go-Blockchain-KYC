@@ -34,6 +34,7 @@ type Storage interface {
 	GetKYCByStatus(status models.KYCStatus) ([]*models.KYCData, error)
 	GetKYCByBank(bankID string) ([]*models.KYCData, error)
 	DeleteKYC(customerID string) error
+	UpdateKYCStatus(customerID string, status models.KYCStatus, verifiedBy string, verificationDate int64) error
 
 	// Bank operations
 	SaveBank(bank *models.Bank) error
