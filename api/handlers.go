@@ -411,7 +411,7 @@ func (h *Handlers) AutoVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	switch result.Status {
 	case models.StatusVerified:
 		// Auto-approve:  Create transaction for blockchain
-		err = h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
+		err = h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID, user.Username)
 		if err != nil {
 			SendBadRequest(w, err.Error())
 			return
@@ -752,7 +752,7 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// This will create transaction and add to pending
-	err = h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID)
+	err = h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID, user.Username)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
@@ -776,7 +776,7 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 		if err := h.storage.UpdateKYCStatus(
 			req.CustomerID,
 			models.StatusVerified,
-			user.ID,           // verified_by = who clicked Verify
+			user.ID,           // verified_by = who clicked Verify => user.Username
 			time.Now().Unix(), // verification_date = now
 		); err != nil {
 			log.Printf("[VerifyKYC] DB update warning: %v", err)
@@ -3455,7 +3455,7 @@ func (h *Handlers) ScanAndVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
 		case models.StatusVerified:
-			if err := h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID); err != nil {
+			if err := h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID, user.Username); err != nil {
 				SendBadRequest(w, err.Error())
 				return
 			}
@@ -3670,7 +3670,7 @@ func (h *Handlers) ScanAndVerifyKYCFile(w http.ResponseWriter, r *http.Request) 
 	if kyc.Status == models.StatusPending {
 		switch aiStatus {
 		case models.StatusVerified:
-			if err := h.blockchain.VerifyKYC(customerID, bankID, user.ID); err != nil {
+			if err := h.blockchain.VerifyKYC(customerID, bankID, user.ID, user.Username); err != nil {
 				log.Printf("ERROR VerifyKYC %s: %v", customerID, err)
 				SendBadRequest(w, fmt.Sprintf("blockchain VerifyKYC failed: %v", err))
 				return

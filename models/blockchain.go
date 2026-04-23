@@ -130,7 +130,8 @@ func (bc *Blockchain) processTransaction(tx *Transaction) {
 		}
 	case TxVerify:
 		if kyc, exists := bc.KYCRecords[tx.CustomerID]; exists {
-			kyc.Verify(tx.BankID)
+			// kyc.Verify(tx.BankID)
+			kyc.Verify(tx.BankID, tx.UserID)
 		}
 	case TxReject:
 		if kyc, exists := bc.KYCRecords[tx.CustomerID]; exists {
@@ -259,7 +260,7 @@ func (bc *Blockchain) DeleteKYC(customerID, bankID, userID, reason string) error
 }
 
 // VerifyKYC verifies a customer's KYC - ONLY this creates a transaction for blockchain
-func (bc *Blockchain) VerifyKYC(customerID, bankID, userID string) error {
+func (bc *Blockchain) VerifyKYC(customerID, bankID, userID, username string) error {
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
 
@@ -286,7 +287,8 @@ func (bc *Blockchain) VerifyKYC(customerID, bankID, userID string) error {
 	}
 
 	// Update status to VERIFIED
-	kyc.Verify(bankID)
+	// kyc.Verify(bankID)
+	kyc.Verify(bankID, username)
 
 	// NOW create transaction for blockchain (only for VERIFIED status)
 	tx := CreateKYCTransaction(kyc, bankID, userID)

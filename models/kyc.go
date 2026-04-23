@@ -161,7 +161,7 @@ func (k *KYCData) DecryptSensitiveData(encryptor *crypto.Encryptor) error {
 }
 
 // Verify marks the KYC as verified
-func (k *KYCData) Verify(bankID string) {
+func (k *KYCData) Verify(bankID, verifiedByUsername string) {
 	k.Status = StatusVerified
 	k.VerifiedBy = bankID
 	k.VerificationDate = time.Now().Unix()
