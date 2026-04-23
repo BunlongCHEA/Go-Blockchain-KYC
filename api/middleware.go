@@ -49,51 +49,51 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 
 		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapper.statusCode, duration)
 
-		// Record activity for monitoring
-		if m.monitoring != nil {
-			// Read userID from the enriched context (set by Authenticate)
-			// For unauthenticated routes r.Context() has no user — use path-based label.
-			userID := "anonymous"
-			if user, ok := GetUserFromContext(r); ok && user != nil {
-				userID = user.ID
-			} else {
-				// For login/register, label by action so it's not just "anonymous"
-				switch {
-				case strings.Contains(r.URL.Path, "/auth/login"):
-					userID = "auth:login"
-				case strings.Contains(r.URL.Path, "/auth/register"):
-					userID = "auth:register"
-				case strings.Contains(r.URL.Path, "/certificate/verify"):
-					userID = "public:verify"
-				case r.URL.Path == "/health":
-					return // ← skip health check entirely from audit
-				}
-			}
+		// // Record activity for monitoring
+		// if m.monitoring != nil {
+		// 	// Read userID from the enriched context (set by Authenticate)
+		// 	// For unauthenticated routes r.Context() has no user — use path-based label.
+		// 	userID := "anonymous"
+		// 	if user, ok := GetUserFromContext(r); ok && user != nil {
+		// 		userID = user.ID
+		// 	} else {
+		// 		// For login/register, label by action so it's not just "anonymous"
+		// 		switch {
+		// 		case strings.Contains(r.URL.Path, "/auth/login"):
+		// 			userID = "auth:login"
+		// 		case strings.Contains(r.URL.Path, "/auth/register"):
+		// 			userID = "auth:register"
+		// 		case strings.Contains(r.URL.Path, "/certificate/verify"):
+		// 			userID = "public:verify"
+		// 		case r.URL.Path == "/health":
+		// 			return // ← skip health check entirely from audit
+		// 		}
+		// 	}
 
-			// Skip health check noise entirely
-			if r.URL.Path == "/health" || r.URL.Path == "/" {
-				return
-			}
+		// 	// Skip health check noise entirely
+		// 	if r.URL.Path == "/health" || r.URL.Path == "/" {
+		// 		return
+		// 	}
 
-			activity := monitoring.UserActivity{
-				UserID:     userID,
-				Action:     r.Method + " " + r.URL.Path,
-				Resource:   getResourceType(r.URL.Path),
-				ResourceID: r.URL.Query().Get("customer_id"),
-				IPAddress:  getClientIP(r),
-				UserAgent:  r.UserAgent(),
-				Timestamp:  time.Now(),
-				Success:    wrapper.statusCode < 400,
-				Details: map[string]interface{}{
-					"method":      r.Method,
-					"path":        r.URL.Path,
-					"status_code": wrapper.statusCode,
-					"duration_ms": duration.Milliseconds(),
-				},
-			}
+		// 	activity := monitoring.UserActivity{
+		// 		UserID:     userID,
+		// 		Action:     r.Method + " " + r.URL.Path,
+		// 		Resource:   getResourceType(r.URL.Path),
+		// 		ResourceID: r.URL.Query().Get("customer_id"),
+		// 		IPAddress:  getClientIP(r),
+		// 		UserAgent:  r.UserAgent(),
+		// 		Timestamp:  time.Now(),
+		// 		Success:    wrapper.statusCode < 400,
+		// 		Details: map[string]interface{}{
+		// 			"method":      r.Method,
+		// 			"path":        r.URL.Path,
+		// 			"status_code": wrapper.statusCode,
+		// 			"duration_ms": duration.Milliseconds(),
+		// 		},
+		// 	}
 
-			m.monitoring.RecordActivity(activity)
-		}
+		// 	m.monitoring.RecordActivity(activity)
+		// }
 	})
 }
 

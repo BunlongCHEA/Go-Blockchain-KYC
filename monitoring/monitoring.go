@@ -78,6 +78,7 @@ type UserActivityStats struct {
 	SuspiciousScore      float64
 	LastUnusualTimeAlert time.Time // when we last fired AnomalyUnusualTime
 	LastFrequencyAlert   time.Time // when we last fired AnomalyHighFrequency
+	LastBulkAccessAlert  time.Time // when we last fired AnomalyBulkDataAccess
 }
 
 // ==================== Storage Interface ====================
@@ -280,8 +281,27 @@ func (m *MonitoringService) detectAnomalies(activity UserActivity, stats *UserAc
 			})
 	}
 
+	// // Check bulk data access
+	// if m.checkBulkAccess(stats) {
+	// 	m.createAlert(activity, AnomalyBulkDataAccess, RiskCritical,
+	// 		"Potential data exfiltration - bulk data access detected",
+	// 		map[string]interface{}{
+	// 			"resources_accessed": stats.ResourcesAccessed,
+	// 			"threshold":          m.config.BulkAccessThreshold,
+	// 		})
+	// }
+
 	// Check bulk data access
-	if m.checkBulkAccess(stats) {
+	// Guards:
+	//   1. Skip pseudo-users (anonymous, auth:login, etc.) — they are middleware
+	//      labels for unauthenticated traffic, not real users.
+	//   2. Rate-limit to once per 10 min — prevents per-request spam once
+	//      the threshold is crossed (no rate limit existed before this fix).
+	if m.checkBulkAccess(stats) &&
+		!isSystemUser(activity.UserID) &&
+		time.Since(stats.LastBulkAccessAlert) > 10*time.Minute {
+
+		stats.LastBulkAccessAlert = time.Now()
 		m.createAlert(activity, AnomalyBulkDataAccess, RiskCritical,
 			"Potential data exfiltration - bulk data access detected",
 			map[string]interface{}{
@@ -425,12 +445,26 @@ func (m *MonitoringService) saveAlertToAuditLog(alert *AnomalyAlert) {
 
 // autoBlockUser automatically blocks user on critical alerts
 func (m *MonitoringService) autoBlockUser(userID string, alert *AnomalyAlert) {
-	log.Printf("AUTO-BLOCK: User %s blocked due to %s", userID, alert.Type)
+	// log.Printf("AUTO-BLOCK: User %s blocked due to %s", userID, alert.Type)
 
-	if m.storage != nil {
-		m.storage.BlockUser(userID, string(alert.Type))
+	// if m.storage != nil {
+	// 	m.storage.BlockUser(userID, string(alert.Type))
+	// }
+
+	// alert.ActionTaken = "USER_AUTO_BLOCKED"
+
+	// Never block pseudo-users — they are middleware labels, not real accounts.
+	// storage.BlockUser("anonymous",...) is a no-op SQL UPDATE (0 rows),
+	// but the log line is alarming and misleading. Suppress it entirely.
+	if isSystemUser(userID) {
+		return // ← stops "AUTO-BLOCK: User anonymous blocked" log
 	}
-
+	log.Printf("AUTO-BLOCK: User %s blocked due to %s", userID, alert.Type)
+	if m.storage != nil {
+		if err := m.storage.BlockUser(userID, string(alert.Type)); err != nil {
+			log.Printf("AUTO-BLOCK storage error for %s: %v", userID, err)
+		}
+	}
 	alert.ActionTaken = "USER_AUTO_BLOCKED"
 }
 
@@ -556,4 +590,15 @@ func (m *MonitoringService) GetAlertCount() map[RiskLevel]int {
 	}
 
 	return counts
+}
+
+// isSystemUser returns true for pseudo-user IDs assigned by the Logging
+// middleware to unauthenticated or public traffic. These labels must never
+// trigger security alerts or auto-block actions.
+func isSystemUser(userID string) bool {
+	switch userID {
+	case "", "anonymous", "auth:login", "auth:register", "public:verify", "system":
+		return true
+	}
+	return false
 }
