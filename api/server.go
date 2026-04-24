@@ -65,7 +65,12 @@ func (s *Server) Start() error {
 		return fmt.Errorf("KYC_ROOT_KEK is not set (check env var or crypto.root_kek in config)")
 	}
 
-	envelope, err := crypto.NewEnvelopeEncryptor(rootKEK, s.storage.(*storage.PostgresStorage))
+	pgStore, ok := s.storage.(*storage.PostgresStorage)
+	if !ok {
+		return fmt.Errorf("envelope encryption requires PostgresStorage")
+	}
+
+	envelope, err := crypto.NewEnvelopeEncryptor(rootKEK, pgStore)
 	if err != nil {
 		return fmt.Errorf("envelope encryptor init: %w", err)
 	}
@@ -73,13 +78,15 @@ func (s *Server) Start() error {
 		return fmt.Errorf("KEK bootstrap: %w", err)
 	}
 
-	signingMgr := crypto.NewSigningKeyManager(s.storage.(*storage.PostgresStorage), envelope)
-	if _, err := signingMgr.Bootstrap(s.config.Crypto.Algorithm, s.config.Crypto.KeySize, "system"); err != nil {
+	signingMgr := crypto.NewSigningKeyManager(pgStore, envelope)
+	keyID, err := signingMgr.Bootstrap(s.config.Crypto.Algorithm, s.config.Crypto.KeySize, "system")
+	if err != nil {
 		return fmt.Errorf("signing key bootstrap: %w", err)
 	}
+	log.Printf("[Server] active signing key: %s", keyID)
 
 	// Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, s.signingKeyMgr)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr)
 
 	// Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)
