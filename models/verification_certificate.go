@@ -318,6 +318,21 @@ func (vc *VerificationCertificate) SignWithSigningManager(m *kycCrypto.SigningKe
 // need to know about the registry. The registry is OUR extra check when
 // WE do the verify.
 func (vc *VerificationCertificate) VerifyWithSigningManager(m *kycCrypto.SigningKeyManager) error {
+	// ── Recover IssuerKeyID from registry when cert is missing it
+	// This happens when a cert was issued with SignWithSigningManager
+	// (which embeds IssuerKeyID in the signed payload) but the JSON was
+	// fetched from the UI/API before the DB select fix was deployed.
+	// Without IssuerKeyID, GetPayloadBytes() produces a DIFFERENT hash
+	// than the one that was signed → ECDSA fails.
+	// Solution: look up IssuerKeyID by the embedded public key PEM.
+	if vc.IssuerKeyID == "" && vc.IssuerPubKey != "" {
+		if recoveredID, err := m.FindKeyIDByPEM(vc.IssuerPubKey); err == nil && recoveredID != "" {
+			// Temporarily populate IssuerKeyID so GetPayloadBytes() produces
+			// the correct payload — identical to the one that was signed.
+			vc.IssuerKeyID = recoveredID
+		}
+	}
+
 	payloadBytes, err := vc.GetPayloadBytes()
 	if err != nil {
 		return fmt.Errorf("payload serialize: %w", err)

@@ -379,3 +379,18 @@ func (m *SigningKeyManager) VerifyWithPEM(data []byte, signatureB64, publicKeyPE
 		return errors.New("unsupported public key type")
 	}
 }
+
+// FindKeyIDByPEM scans the registry for a key whose public_key_pem matches.
+// Used as fallback when a certificate is missing issuer_key_id but has issuer_public_key.
+func (m *SigningKeyManager) FindKeyIDByPEM(publicKeyPEM string) (string, error) {
+	keys, err := m.store.ListSystemKeys()
+	if err != nil {
+		return "", err
+	}
+	for _, k := range keys {
+		if k.PublicKeyPEM == publicKeyPEM {
+			return k.KeyID, nil
+		}
+	}
+	return "", nil // not found — legacy cert from external key, fallback to embedded pubkey
+}
