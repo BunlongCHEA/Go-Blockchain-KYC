@@ -68,6 +68,92 @@ Three distinct cryptographic jobs:
 
 So the .pem files serve two roles: (a) your system signing identity, (b) per-requester identity for external integrators.
 
+### 🔑 System Signing Key Rotation
+
+```bash
+BEFORE rotation:                    AFTER rotation:
+┌─────────────────┐                 ┌─────────────────┐  ← NEW (active)
+│ Key v1 [ACTIVE] │  ──────────►   │ Key v2 [ACTIVE] │  signs all NEW certs
+└─────────────────┘                 └─────────────────┘
+                                    ┌─────────────────┐
+                                    │ Key v1 [RETIRED] │  still used to VERIFY old certs
+                                    └─────────────────┘
+```
+What happens step-by-step:
+
+1. New key pair (RSA/ECDSA) is generated
+2. New key is saved to DB as `is_active = FALSE` first (the bug fix)
+3. Old key is atomically set to `is_active = FALSE` → new key set to `TRUE` (single DB transaction)
+4. In-memory cache updated — new certs immediately use new key
+5. Old key stays in the `system_keys` table forever — never deleted
+
+**Impact on existing certificates:** ✅ **None** — every cert has `issuer_public_key` + `issuer_key_id` embedded inside it. When verifying, Go looks up the key by `issuer_key_id` from the registry. Old certs still verify using the retired key.
+
+**=> How to Verify**
+
+```bash
+# Step 1: Issue a new certificate (will use new signing key)
+POST /api/v1/certificate/issue
+{
+  "customer_id": "<any verified customer>",
+  "requester_id": "test-verify",
+  "requester_public_key": ""
+}
+
+# Step 2: Take the certificate from the response and verify it
+POST /api/v1/certificate/verify
+{
+  "certificate": { <paste full cert object from step 1> }
+}
+
+# Expected response:
+{
+  "valid": true,
+  "key_type": "RSA",   ← should match what you rotated to
+  ...
+}
+```
+
+### 🔐 KEK Rotation (PII Envelope Encryption)
+
+Think of this like **changing the master key to a safe, but re-locking every individual item inside with the new master key in the background.**
+
+```bash
+BEFORE rotation:
+  KYC record → [email encrypted] → wrapped by DEK₁ → DEK₁ wrapped by KEK-v1
+
+AFTER rotation (immediately):
+  KEK-v2 is now ACTIVE (new PII writes use KEK-v2)
+  KEK-v1 still alive (existing records not re-wrapped yet)
+
+AFTER background re-wrap completes:
+  KYC record → [email encrypted] → wrapped by DEK₁ → DEK₁ wrapped by KEK-v2
+```
+
+What happens step-by-step:
+
+1. New KEK is generated, saved as `is_active = FALSE`
+2. New KEK atomically activated (`KEK-v1 → FALSE, KEK-v2 → TRUE`)
+3. API responds immediately — no waiting
+4. Background goroutine starts re-wrapping every KYC record's DEK:
+    - Reads each record's `wrapped_dek` + old `kek_id`
+    - Unwraps DEK using old KEK-v1
+    - Re-wraps same DEK using new KEK-v2
+    - Updates `wrapped_dek` + `kek_id` in Postgres
+5. Old KEK-v1 stays in DB until all re-wraps finish
+
+**PII data (email, phone, ID number) itself is NEVER re-encrypted** — only the DEK wrapper changes. Zero downtime.
+
+**=> How to Verify**
+
+```bash
+# Get any verified KYC — if email/phone/id_number decrypt correctly, KEK works
+GET /api/v1/kyc?customer_id=<id>
+
+# Expected: email and phone show real values (not [ENCRYPTED])
+# If KEK re-wrap broke something you'd see decryption errors in Go logs
+```
+
 
 ## 2. Key Features
 

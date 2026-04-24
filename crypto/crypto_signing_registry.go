@@ -126,7 +126,7 @@ func (m *SigningKeyManager) Rotate(algorithm string, keySize int, createdBy stri
 		PublicKeyPEM:        pubPEM,
 		PrivateKeyEncrypted: packed,
 		WrappingKEKID:       kekID,
-		IsActive:            activate,
+		IsActive:            false, // always insert as INACTIVE first
 		ValidFrom:           now,
 		ValidUntil:          validUntil,
 		CreatedBy:           createdBy,
@@ -138,9 +138,12 @@ func (m *SigningKeyManager) Rotate(algorithm string, keySize int, createdBy stri
 	}
 
 	if activate {
+		// ActivateSystemKey atomically: old → FALSE, new → TRUE in one transaction
+		// This is safe because the new key is already FALSE — no unique index conflict.
 		if err := m.store.ActivateSystemKey(keyID, createdBy); err != nil {
 			return "", err
 		}
+		rec.IsActive = true // update in-memory record to reflect actual state
 		m.mu.Lock()
 		m.active = rec
 		m.mu.Unlock()

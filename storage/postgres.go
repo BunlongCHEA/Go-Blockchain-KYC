@@ -2193,7 +2193,7 @@ func (p *PostgresStorage) GetCertificate(certificateID string) (*models.Verifica
 		SELECT certificate_id, customer_id, customer_name, requester_id,
 		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
 		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
-		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE)
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE), COALESCE(issuer_key_id,'')
 		FROM certificates WHERE certificate_id = $1
 	`
 	row := p.db.QueryRow(query, certificateID)
@@ -2270,6 +2270,16 @@ func (p *PostgresStorage) ListCertificates(requesterID string, limit int, includ
 	}
 	return certs, nil
 }
+
+// ─── shared SELECT columns for ALL certificate queries
+const certSelectCols = `
+    SELECT certificate_id, customer_id, customer_name, requester_id,
+           COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
+           status, COALESCE(verified_by,''), COALESCE(verification_date,0),
+           COALESCE(key_type,''), COALESCE(signature,''), kyc_summary,
+           issued_at, expires_at, COALESCE(is_active, TRUE),
+           COALESCE(issuer_key_id,'')
+    FROM certificates`
 
 // scanCertificate scans a single *sql.Row (includes is_active column)
 func scanCertificate(row *sql.Row) (*models.VerificationCertificate, error) {
