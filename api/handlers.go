@@ -42,6 +42,8 @@ type Handlers struct {
 	monitoringService   *monitoring.MonitoringService
 	keyManager          *crypto.KeyManager
 	config              *config.Config
+	envelope            *crypto.EnvelopeEncryptor
+	signingKeyMgr       *crypto.SigningKeyManager
 }
 
 // UpdateBankRequest — full or partial bank update
@@ -148,6 +150,8 @@ func NewHandlers(
 	monitoringService *monitoring.MonitoringService,
 	keyManager *crypto.KeyManager,
 	cfg *config.Config,
+	envelope *crypto.EnvelopeEncryptor,
+	signingKeyMgr *crypto.SigningKeyManager,
 ) *Handlers {
 	return &Handlers{
 		blockchain:          blockchain,
@@ -158,6 +162,8 @@ func NewHandlers(
 		monitoringService:   monitoringService,
 		keyManager:          keyManager,
 		config:              cfg,
+		envelope:            envelope,
+		signingKeyMgr:       signingKeyMgr,
 	}
 }
 
@@ -185,6 +191,11 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 			// can operate this session; next restart may require re-register.
 			log.Printf("[Register] Warning: could not persist user to DB: %v", dbErr)
 		}
+
+		// Stamp password_changed_at = NOW() on registration
+		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+			pgStore.UpdatePasswordChangedAt(user.ID)
+		}
 	}
 
 	// Audit log
@@ -209,6 +220,23 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Emergency lock: block all non-admin logins ────────────────────────
+	// Admin can still log in to disable the lock.
+	if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+		if locked, _ := pgStore.IsEmergencyLocked(); locked {
+			// Need to check role before rejecting — peek at the user record
+			if u, _ := pgStore.GetUserByUsername(req.Username); u != nil {
+				if u.Role != auth.RoleAdmin {
+					h.audit(r, "LOGIN_BLOCKED_EMERGENCY_LOCK", ResourceAuth, req.Username,
+						map[string]interface{}{"username": req.Username})
+					SendError(w, http.StatusServiceUnavailable,
+						"System is in emergency lock. Contact your administrator.")
+					return
+				}
+			}
+		}
+	}
+
 	response, err := h.authService.Login(&req)
 	if err != nil {
 		// ALSO audit failed logins — important for brute-force detection
@@ -219,6 +247,31 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 		SendUnauthorized(w, err.Error())
 		return
+	}
+
+	// ── Password expiry check ─────────────────────────────────────────────
+	// Applies to all roles except integration_service (machine account).
+	// On expiry: allow login, set password_change_required=true so the UI
+	// forces the change-password screen on next action.
+	if response.User.Role != auth.RoleIntegrationService {
+		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+			if pol, err := pgStore.GetPasswordPolicy(); err == nil {
+				if changedAt, err := pgStore.GetPasswordChangedAt(response.User.ID); err == nil {
+					if storage.IsPasswordExpired(changedAt, pol.IntervalMonths) {
+						response.User.PasswordChangeRequired = true
+						if err := pgStore.SaveUser(response.User); err != nil {
+							log.Printf("[Login] could not persist expiry flag: %v", err)
+						}
+						h.authService.LoadUser(response.User)
+						h.audit(r, "PASSWORD_EXPIRED", ResourceAuth, response.User.ID,
+							map[string]interface{}{
+								"username":          response.User.Username,
+								"days_since_change": int(time.Since(changedAt).Hours() / 24),
+							})
+					}
+				}
+			}
+		}
 	}
 
 	// Audit log: include user.ID from the LoginResponse, not just username
@@ -317,6 +370,13 @@ func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			if dbErr := h.storage.SaveUser(updatedUser); dbErr != nil {
 				log.Printf("[ChangePassword] Warning: could not persist user to DB: %v", dbErr)
+			}
+		}
+
+		// Stamp password_changed_at
+		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+			if err := pgStore.UpdatePasswordChangedAt(user.ID); err != nil {
+				log.Printf("[ChangePassword] Warning: could not stamp password_changed_at: %v", err)
 			}
 		}
 	}
@@ -2096,7 +2156,8 @@ func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.R
 	)
 
 	// Sign using KeyManager (supports both RSA and ECDSA)
-	if err := cert.SignWithKeyManager(h.keyManager); err != nil {
+	// if err := cert.SignWithKeyManager(h.keyManager); err != nil {
+	if err := cert.SignWithSigningManager(h.signingKeyMgr); err != nil {
 		SendInternalError(w, "failed to sign certificate:  "+err.Error())
 		return
 	}
@@ -4004,6 +4065,11 @@ func (h *Handlers) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	if h.storage != nil && user != nil {
 		h.storage.SaveUser(user)
 
+		// Stamp password_changed_at — the temp password is a new one
+		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+			pgStore.UpdatePasswordChangedAt(user.ID)
+		}
+
 		// Audit the password reset action
 		h.audit(r, ActionPasswordReset, ResourceUser, req.UserID, map[string]interface{}{
 			"username": user.Username,
@@ -4107,4 +4173,323 @@ func (h *Handlers) GetMyCertificates(w http.ResponseWriter, r *http.Request) {
 		"certificates": certs,
 		"count":        len(certs),
 	})
+}
+
+// ── Emergency Security Lock ─────────────────────────────────────────────────
+
+// GetPasswordPolicy returns the current policy. Any authenticated user can read
+// (so the frontend can show "password expires in N days").
+// GET /api/v1/auth/password-policy
+func (h *Handlers) GetPasswordPolicy(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	pol, err := pgStore.GetPasswordPolicy()
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+
+	// Include caller's own password status so frontend can show countdown
+	var daysRemaining int
+	if user, ok := GetUserFromContext(r); ok {
+		if changedAt, err := pgStore.GetPasswordChangedAt(user.ID); err == nil && !changedAt.IsZero() {
+			expiresAt := changedAt.AddDate(0, pol.IntervalMonths, 0)
+			daysRemaining = int(time.Until(expiresAt).Hours() / 24)
+			if daysRemaining < 0 {
+				daysRemaining = 0
+			}
+		}
+	}
+
+	h.audit(r, "PASSWORD_POLICY_READ", "SECURITY", "password_policy", nil)
+
+	SendSuccess(w, "", map[string]interface{}{
+		"interval_months":     pol.IntervalMonths,
+		"updated_by":          pol.UpdatedBy,
+		"updated_at":          pol.UpdatedAt,
+		"your_days_remaining": daysRemaining,
+	})
+}
+
+// UpdatePasswordPolicy — admin only.
+// PUT /api/v1/auth/password-policy
+// Body: { "interval_months": 1|3|6|12 }
+func (h *Handlers) UpdatePasswordPolicy(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	var req struct {
+		IntervalMonths int `json:"interval_months"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	if err := pgStore.SetPasswordPolicy(req.IntervalMonths, user.ID); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	h.audit(r, "PASSWORD_POLICY_UPDATED", "SECURITY", "password_policy", map[string]interface{}{
+		"interval_months": req.IntervalMonths,
+		"actor":           user.Username,
+	})
+
+	SendSuccess(w, fmt.Sprintf("Password policy set to %d months", req.IntervalMonths),
+		map[string]interface{}{"interval_months": req.IntervalMonths})
+}
+
+// ForceAllPasswordReset — admin only.
+// POST /api/v1/auth/force-password-reset-all
+// Sets password_change_required=TRUE for every non-root, non-machine user.
+// Users are NOT logged out — they just get forced to the change-password
+// screen on their next login (or their next authenticated page load, if the
+// frontend polls it).
+func (h *Handlers) ForceAllPasswordReset(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	n, err := pgStore.ForceAllPasswordChange(user.ID)
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+
+	h.audit(r, "PASSWORD_FORCE_RESET_ALL", "SECURITY", "users", map[string]interface{}{
+		"affected_count": n,
+		"actor":          user.Username,
+	})
+
+	// Also invalidate the in-memory auth cache so the next token validation
+	// picks up the flag immediately.
+	if h.authService != nil {
+		if users, err := pgStore.GetAllUsers(); err == nil {
+			for _, u := range users {
+				if u.Username != "admin" && u.Role != auth.RoleIntegrationService {
+					u.PasswordChangeRequired = true
+					h.authService.LoadUser(u)
+				}
+			}
+		}
+	}
+
+	SendSuccess(w, fmt.Sprintf("Forced password reset for %d users", n),
+		map[string]interface{}{"affected_count": n})
+}
+
+// EmergencyLock — admin only.
+// POST /api/v1/security/emergency-lock
+// Body: { "locked": true, "reason": "..." }
+// When locked=true, all non-admin logins are rejected.
+// When locked=false, normal login resumes.
+func (h *Handlers) EmergencyLock(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	var req struct {
+		Locked bool   `json:"locked"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	if err := pgStore.SetEmergencyLock(req.Locked, user.ID); err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+
+	action := "EMERGENCY_LOCK_DISABLED"
+	msg := "Emergency lock disabled — normal login resumed"
+	if req.Locked {
+		action = "EMERGENCY_LOCK_ENABLED"
+		msg = "Emergency lock enabled — non-admin logins blocked"
+	}
+	h.audit(r, action, "SECURITY", "emergency_lock", map[string]interface{}{
+		"reason": req.Reason,
+		"actor":  user.Username,
+	})
+
+	SendSuccess(w, msg, map[string]interface{}{"locked": req.Locked})
+}
+
+// GetEmergencyLock — any authenticated admin can read status.
+// GET /api/v1/security/emergency-lock
+func (h *Handlers) GetEmergencyLock(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	locked, err := pgStore.IsEmergencyLocked()
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+	SendSuccess(w, "", map[string]interface{}{"locked": locked})
+}
+
+// ── Key rotation — admin only, infrequent (system key: ~1/year; KEK: 1–2/year) ──
+
+// RotateSigningKey generates a new system signing key and activates it.
+// Old certs remain verifiable because they carry issuer_public_key + issuer_key_id.
+// POST /api/v1/security/keys/signing/rotate
+// Body: { "algorithm": "RSA"|"ECDSA", "key_size": 2048|256 }
+func (h *Handlers) RotateSigningKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	var req struct {
+		Algorithm string `json:"algorithm"`
+		KeySize   int    `json:"key_size"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Algorithm == "" {
+		req.Algorithm = h.config.Crypto.Algorithm
+	}
+	if req.KeySize == 0 {
+		req.KeySize = h.config.Crypto.KeySize
+	}
+
+	if h.signingKeyMgr == nil {
+		SendError(w, http.StatusServiceUnavailable, "signing key manager not initialized")
+		return
+	}
+
+	newID, err := h.signingKeyMgr.Rotate(req.Algorithm, req.KeySize, user.ID, true)
+	if err != nil {
+		SendInternalError(w, "rotation failed: "+err.Error())
+		return
+	}
+
+	h.audit(r, "SIGNING_KEY_ROTATED", "SECURITY", newID, map[string]interface{}{
+		"algorithm": req.Algorithm,
+		"key_size":  req.KeySize,
+		"actor":     user.Username,
+	})
+
+	SendSuccess(w, "Signing key rotated — new certificates will use the new key; old certificates remain verifiable", map[string]interface{}{
+		"new_key_id": newID,
+		"algorithm":  req.Algorithm,
+		"key_size":   req.KeySize,
+		"note":       "Retired key is kept for verifying historical certificates",
+	})
+}
+
+// ListSigningKeys — admin only.
+// GET /api/v1/security/keys/signing
+func (h *Handlers) ListSigningKeys(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	keys, err := pgStore.ListSystemKeys()
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+	// Strip private key encrypted blobs for safety (ListSystemKeys already does)
+	SendSuccess(w, "", map[string]interface{}{"keys": keys, "count": len(keys)})
+}
+
+// RotateKEK generates a new KEK, activates it, and kicks off a background
+// re-wrap of all DEKs. Returns immediately; caller polls GetKEKRewrapStatus.
+// POST /api/v1/security/keys/kek/rotate
+func (h *Handlers) RotateKEK(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	if h.envelope == nil {
+		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialized")
+		return
+	}
+
+	newKEKID, err := h.envelope.GenerateKEK(user.ID, false) // inactive for now
+	if err != nil {
+		SendInternalError(w, "generate KEK: "+err.Error())
+		return
+	}
+	if err := h.envelope.ActivateKEK(newKEKID, user.ID); err != nil {
+		SendInternalError(w, "activate KEK: "+err.Error())
+		return
+	}
+
+	// Background rewrap — non-blocking.
+	go func() {
+		pgStore, ok := h.storage.(*storage.PostgresStorage)
+		if !ok {
+			return
+		}
+		rows, err := pgStore.ListKYCForRewrap(newKEKID)
+		if err != nil {
+			log.Printf("[KEK rotate] list rewrap rows: %v", err)
+			return
+		}
+		log.Printf("[KEK rotate] rewrapping %d rows under new KEK %s", len(rows), newKEKID)
+		for _, row := range rows {
+			newWrapped, newID, err := h.envelope.RewrapDEK(row.WrappedDEK, row.KEKID)
+			if err != nil {
+				log.Printf("[KEK rotate] rewrap %s failed: %v", row.CustomerID, err)
+				continue
+			}
+			if err := pgStore.RewrapKYCRecord(row.CustomerID, newWrapped, newID); err != nil {
+				log.Printf("[KEK rotate] persist rewrap %s failed: %v", row.CustomerID, err)
+			}
+		}
+		log.Printf("[KEK rotate] rewrap complete for KEK %s", newKEKID)
+	}()
+
+	h.audit(r, "KEK_ROTATED", "SECURITY", newKEKID, map[string]interface{}{
+		"actor": user.Username,
+	})
+
+	SendSuccess(w, "KEK rotated. Background re-wrap of DEKs has started.", map[string]interface{}{
+		"new_kek_id": newKEKID,
+		"note":       "DEK re-wrap runs in background. Old KEK stays available for unwrap until re-wrap completes.",
+	})
+}
+
+// ListKEKs — admin only.
+// GET /api/v1/security/keys/kek
+func (h *Handlers) ListKEKs(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+	keks, err := pgStore.ListKEKs()
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+	SendSuccess(w, "", map[string]interface{}{"keks": keks, "count": len(keks)})
 }

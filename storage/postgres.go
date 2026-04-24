@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Go-Blockchain-KYC/auth"
+	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 
 	_ "github.com/lib/pq"
@@ -2370,4 +2371,427 @@ func (p *PostgresStorage) GetCertificatesByCustomer(customerID string) ([]*model
 		certs = append(certs, cert)
 	}
 	return certs, nil
+}
+
+// ==================== Password Policy ====================
+
+// PasswordPolicy — single-row config.
+type PasswordPolicy struct {
+	IntervalMonths int       `json:"interval_months"`
+	UpdatedBy      string    `json:"updated_by"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (p *PostgresStorage) GetPasswordPolicy() (*PasswordPolicy, error) {
+	pol := &PasswordPolicy{}
+	var updatedBy sql.NullString
+	err := p.db.QueryRow(`
+		SELECT interval_months, COALESCE(updated_by, ''), updated_at
+		FROM   password_policy
+		WHERE  id = 1
+	`).Scan(&pol.IntervalMonths, &updatedBy, &pol.UpdatedAt)
+	if err == sql.ErrNoRows {
+		// Migration seeds a row, but guard anyway.
+		return &PasswordPolicy{IntervalMonths: 3}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get password policy: %w", err)
+	}
+	pol.UpdatedBy = updatedBy.String
+	return pol, nil
+}
+
+func (p *PostgresStorage) SetPasswordPolicy(intervalMonths int, updatedBy string) error {
+	valid := map[int]bool{1: true, 3: true, 6: true, 12: true}
+	if !valid[intervalMonths] {
+		return fmt.Errorf("interval_months must be 1, 3, 6, or 12")
+	}
+	_, err := p.db.Exec(`
+		INSERT INTO password_policy (id, interval_months, updated_by, updated_at)
+		VALUES (1, $1, $2, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			interval_months = EXCLUDED.interval_months,
+			updated_by      = EXCLUDED.updated_by,
+			updated_at      = EXCLUDED.updated_at
+	`, intervalMonths, updatedBy)
+	return err
+}
+
+// IsPasswordExpired returns true if passwordChangedAt + intervalMonths < NOW().
+// NULL passwordChangedAt (existing users pre-migration) is treated as expired
+// = false unless createdAt + interval already passed (handled by the
+// UPDATE-from-created_at migration).
+func IsPasswordExpired(passwordChangedAt time.Time, intervalMonths int) bool {
+	if passwordChangedAt.IsZero() {
+		return false // safety: don't lock out users with no tracked change date
+	}
+	return time.Since(passwordChangedAt) > time.Duration(intervalMonths)*30*24*time.Hour
+}
+
+// ForceAllPasswordChange sets password_change_required=TRUE on every active user
+// except the root admin and integration_service accounts. Returns affected count.
+func (p *PostgresStorage) ForceAllPasswordChange(actorUserID string) (int, error) {
+	res, err := p.db.Exec(`
+		UPDATE users
+		SET    password_change_required = TRUE,
+		       updated_at               = NOW()
+		WHERE  is_deleted = FALSE
+		AND    is_active  = TRUE
+		AND    username  <> 'admin'
+		AND    role      <> 'integration_service'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("force all password change: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ==================== System Flags (emergency lock, etc.) ====================
+
+func (p *PostgresStorage) GetSystemFlag(key string) (string, bool, error) {
+	var v string
+	err := p.db.QueryRow(
+		`SELECT flag_value FROM system_flags WHERE flag_key = $1`, key,
+	).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+func (p *PostgresStorage) SetSystemFlag(key, value, updatedBy string) error {
+	_, err := p.db.Exec(`
+		INSERT INTO system_flags (flag_key, flag_value, updated_by, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (flag_key) DO UPDATE SET
+			flag_value = EXCLUDED.flag_value,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = EXCLUDED.updated_at
+	`, key, value, updatedBy)
+	return err
+}
+
+// Emergency lock convenience wrappers.
+const FlagEmergencyLock = "emergency_lock"
+
+func (p *PostgresStorage) IsEmergencyLocked() (bool, error) {
+	v, ok, err := p.GetSystemFlag(FlagEmergencyLock)
+	if err != nil || !ok {
+		return false, err
+	}
+	return v == "true", nil
+}
+
+func (p *PostgresStorage) SetEmergencyLock(locked bool, actor string) error {
+	val := "false"
+	if locked {
+		val = "true"
+	}
+	return p.SetSystemFlag(FlagEmergencyLock, val, actor)
+}
+
+// ==================== KEK Store ====================
+
+func (p *PostgresStorage) SaveKEK(kekID, wrappedKey string, isActive bool, createdBy string) error {
+	_, err := p.db.Exec(`
+		INSERT INTO kek_keys (kek_id, wrapped_key, is_active, created_at, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+	`, kekID, wrappedKey, isActive, time.Now().Unix(), createdBy)
+	return err
+}
+
+func (p *PostgresStorage) GetKEK(kekID string) (string, bool, error) {
+	var wrapped string
+	var active bool
+	err := p.db.QueryRow(`
+		SELECT wrapped_key, is_active FROM kek_keys WHERE kek_id = $1
+	`, kekID).Scan(&wrapped, &active)
+	if err == sql.ErrNoRows {
+		return "", false, fmt.Errorf("kek not found: %s", kekID)
+	}
+	return wrapped, active, err
+}
+
+func (p *PostgresStorage) GetActiveKEK() (string, string, error) {
+	var id, wrapped string
+	err := p.db.QueryRow(`
+		SELECT kek_id, wrapped_key FROM kek_keys WHERE is_active = TRUE LIMIT 1
+	`).Scan(&id, &wrapped)
+	if err == sql.ErrNoRows {
+		return "", "", nil // bootstrap will create one
+	}
+	return id, wrapped, err
+}
+
+// ActivateKEK atomically deactivates all other KEKs and activates the given one.
+// Uses the partial unique index on is_active=true to prevent two-active race.
+func (p *PostgresStorage) ActivateKEK(kekID, userID string) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE kek_keys
+		SET    is_active = FALSE,
+		       retired_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  is_active = TRUE AND kek_id <> $1
+	`, kekID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE kek_keys SET is_active = TRUE, retired_at = NULL WHERE kek_id = $1
+	`, kekID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *PostgresStorage) RetireKEK(kekID string) error {
+	_, err := p.db.Exec(`
+		UPDATE kek_keys
+		SET    is_active = FALSE,
+		       retired_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  kek_id = $1
+	`, kekID)
+	return err
+}
+
+func (p *PostgresStorage) ListKEKs() ([]crypto.KEKRecord, error) {
+	rows, err := p.db.Query(`
+		SELECT kek_id, is_active, created_at, COALESCE(retired_at, 0)
+		FROM   kek_keys ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []crypto.KEKRecord
+	for rows.Next() {
+		var r crypto.KEKRecord
+		if err := rows.Scan(&r.KEKID, &r.IsActive, &r.CreatedAt, &r.RetiredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// ==================== Signing Key Store ====================
+
+func (p *PostgresStorage) SaveSystemKey(rec *crypto.SystemKeyRecord) error {
+	_, err := p.db.Exec(`
+		INSERT INTO system_keys (
+			key_id, key_type, key_size, public_key_pem,
+			private_key_encrypted, wrapping_kek_id,
+			is_active, valid_from, valid_until, created_by, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+	`,
+		rec.KeyID, rec.KeyType, rec.KeySize, rec.PublicKeyPEM,
+		rec.PrivateKeyEncrypted, rec.WrappingKEKID,
+		rec.IsActive, rec.ValidFrom, rec.ValidUntil,
+		rec.CreatedBy, rec.CreatedAt,
+	)
+	return err
+}
+
+func (p *PostgresStorage) GetSystemKey(keyID string) (*crypto.SystemKeyRecord, error) {
+	r := &crypto.SystemKeyRecord{}
+	var validUntil, retiredAt sql.NullInt64
+	err := p.db.QueryRow(`
+		SELECT key_id, key_type, key_size, public_key_pem,
+		       private_key_encrypted, wrapping_kek_id,
+		       is_active, valid_from, valid_until, retired_at,
+		       COALESCE(created_by,''), created_at
+		FROM   system_keys WHERE key_id = $1
+	`, keyID).Scan(
+		&r.KeyID, &r.KeyType, &r.KeySize, &r.PublicKeyPEM,
+		&r.PrivateKeyEncrypted, &r.WrappingKEKID,
+		&r.IsActive, &r.ValidFrom, &validUntil, &retiredAt,
+		&r.CreatedBy, &r.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("system key not found: %s", keyID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if validUntil.Valid {
+		r.ValidUntil = validUntil.Int64
+	}
+	if retiredAt.Valid {
+		r.RetiredAt = retiredAt.Int64
+	}
+	return r, nil
+}
+
+func (p *PostgresStorage) GetActiveSystemKey() (*crypto.SystemKeyRecord, error) {
+	r := &crypto.SystemKeyRecord{}
+	var validUntil, retiredAt sql.NullInt64
+	err := p.db.QueryRow(`
+		SELECT key_id, key_type, key_size, public_key_pem,
+		       private_key_encrypted, wrapping_kek_id,
+		       is_active, valid_from, valid_until, retired_at,
+		       COALESCE(created_by,''), created_at
+		FROM   system_keys WHERE is_active = TRUE LIMIT 1
+	`).Scan(
+		&r.KeyID, &r.KeyType, &r.KeySize, &r.PublicKeyPEM,
+		&r.PrivateKeyEncrypted, &r.WrappingKEKID,
+		&r.IsActive, &r.ValidFrom, &validUntil, &retiredAt,
+		&r.CreatedBy, &r.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if validUntil.Valid {
+		r.ValidUntil = validUntil.Int64
+	}
+	if retiredAt.Valid {
+		r.RetiredAt = retiredAt.Int64
+	}
+	return r, nil
+}
+
+func (p *PostgresStorage) ActivateSystemKey(keyID, userID string) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE system_keys
+		SET    is_active = FALSE,
+		       retired_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  is_active = TRUE AND key_id <> $1
+	`, keyID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE system_keys SET is_active = TRUE, retired_at = NULL WHERE key_id = $1
+	`, keyID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *PostgresStorage) RetireSystemKey(keyID string) error {
+	_, err := p.db.Exec(`
+		UPDATE system_keys
+		SET    is_active  = FALSE,
+		       retired_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  key_id = $1
+	`, keyID)
+	return err
+}
+
+func (p *PostgresStorage) ListSystemKeys() ([]*crypto.SystemKeyRecord, error) {
+	rows, err := p.db.Query(`
+		SELECT key_id, key_type, key_size, public_key_pem,
+		       '' as private_key_encrypted, wrapping_kek_id,
+		       is_active, valid_from, COALESCE(valid_until, 0), COALESCE(retired_at, 0),
+		       COALESCE(created_by,''), created_at
+		FROM   system_keys ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*crypto.SystemKeyRecord
+	for rows.Next() {
+		r := &crypto.SystemKeyRecord{}
+		if err := rows.Scan(
+			&r.KeyID, &r.KeyType, &r.KeySize, &r.PublicKeyPEM,
+			&r.PrivateKeyEncrypted, &r.WrappingKEKID,
+			&r.IsActive, &r.ValidFrom, &r.ValidUntil, &r.RetiredAt,
+			&r.CreatedBy, &r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// ==================== KYC DEK rewrap helper (for KEK rotation) ====================
+
+// RewrapKYCRecord updates wrapped_dek and encryption_key_id for one KYC row
+// without touching the encrypted PII columns. Used by the KEK rotation job.
+func (p *PostgresStorage) RewrapKYCRecord(customerID, newWrappedDEK, newKEKID string) error {
+	_, err := p.db.Exec(`
+		UPDATE kyc_records
+		SET    wrapped_dek       = $2,
+		       encryption_key_id = $3,
+		       updated_at        = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  customer_id = $1
+	`, customerID, newWrappedDEK, newKEKID)
+	return err
+}
+
+// ListKYCForRewrap returns customer_ids + current wrapped_dek + current KEK id
+// for all rows NOT yet under the target KEK.
+func (p *PostgresStorage) ListKYCForRewrap(currentKEKID string) ([]RewrapRow, error) {
+	rows, err := p.db.Query(`
+		SELECT customer_id, COALESCE(wrapped_dek, ''), COALESCE(encryption_key_id, '')
+		FROM   kyc_records
+		WHERE  (encryption_key_id IS NULL OR encryption_key_id <> $1)
+		AND    wrapped_dek IS NOT NULL
+		AND    wrapped_dek <> ''
+	`, currentKEKID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RewrapRow
+	for rows.Next() {
+		var r RewrapRow
+		if err := rows.Scan(&r.CustomerID, &r.WrappedDEK, &r.KEKID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+type RewrapRow struct {
+	CustomerID string
+	WrappedDEK string
+	KEKID      string
+}
+
+// ==================== User password tracking ====================
+
+// UpdatePasswordChangedAt stamps the user's password_changed_at to NOW.
+// Called on any successful password change (self-service or admin reset).
+func (p *PostgresStorage) UpdatePasswordChangedAt(userID string) error {
+	_, err := p.db.Exec(`
+		UPDATE users
+		SET    password_changed_at = NOW(),
+		       updated_at          = NOW()
+		WHERE  id = $1
+	`, userID)
+	return err
+}
+
+// GetPasswordChangedAt reads the stamp. Returns zero time if NULL.
+func (p *PostgresStorage) GetPasswordChangedAt(userID string) (time.Time, error) {
+	var t sql.NullTime
+	err := p.db.QueryRow(
+		`SELECT password_changed_at FROM users WHERE id = $1`, userID,
+	).Scan(&t)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !t.Valid {
+		return time.Time{}, nil
+	}
+	return t.Time, nil
 }

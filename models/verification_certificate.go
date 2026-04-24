@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,6 +42,8 @@ type VerificationCertificate struct {
 	SignedAt  int64  `json:"signed_at"`
 
 	IsActive bool `json:"is_active"` // for soft deletion and history tracking
+
+	IssuerKeyID string `json:"issuer_key_id,omitempty"` // key ID for signature verification (if using KeyManager)
 }
 
 // KYCSummary contains non-sensitive KYC info for certificate
@@ -262,4 +265,42 @@ func (vc *VerificationCertificate) IssuedAt() int64 {
 // CustomerName returns a display name from KYCSummary
 func (vc *VerificationCertificate) CustomerName() string {
 	return vc.KYCSummary.FirstName + " " + vc.KYCSummary.LastName
+}
+
+// Signing with the new rotation-aware path:
+func (vc *VerificationCertificate) SignWithSigningManager(m *kycCrypto.SigningKeyManager) error {
+	priv, keyType, keyID, err := m.ActivePrivate()
+	if err != nil {
+		return err
+	}
+	pubPEM, err := m.ActivePublicKeyPEM()
+	if err != nil {
+		return err
+	}
+	vc.IssuerPubKey = pubPEM
+	vc.KeyType = keyType
+	vc.IssuerKeyID = keyID
+
+	payloadBytes, err := vc.GetPayloadBytes()
+	if err != nil {
+		return err
+	}
+
+	// Sign with the active private key
+	hash := sha256.Sum256(payloadBytes)
+	var sig []byte
+	switch pk := priv.(type) {
+	case *rsa.PrivateKey:
+		sig, err = rsa.SignPKCS1v15(rand.Reader, pk, crypto.SHA256, hash[:])
+	case *ecdsa.PrivateKey:
+		sig, err = ecdsa.SignASN1(rand.Reader, pk, hash[:])
+	default:
+		err = errors.New("unsupported private key type")
+	}
+	if err != nil {
+		return err
+	}
+	vc.Signature = base64.StdEncoding.EncodeToString(sig)
+	vc.SignedAt = time.Now().Unix()
+	return nil
 }

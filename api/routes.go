@@ -319,5 +319,54 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
 
+	// ==================== Emergency Security
+
+	mux.Handle("GET /api/v1/auth/password-policy",
+		middleware.Authenticate(http.HandlerFunc(handlers.GetPasswordPolicy)))
+
+	mux.Handle("PUT /api/v1/auth/password-policy",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.UpdatePasswordPolicy))))
+
+	mux.Handle("POST /api/v1/auth/force-password-reset-all",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ForceAllPasswordReset))))
+
+	// Emergency lock — admin only
+	mux.Handle("GET /api/v1/security/emergency-lock",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.GetEmergencyLock))))
+
+	mux.Handle("POST /api/v1/security/emergency-lock",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.EmergencyLock))))
+
+	// ==================== Key Management Routes
+
+	// Key rotation — admin only
+	mux.Handle("POST /api/v1/security/keys/signing/rotate",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RotateSigningKey))))
+
+	mux.Handle("GET /api/v1/security/keys/signing",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ListSigningKeys))))
+
+	mux.Handle("POST /api/v1/security/keys/kek/rotate",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RotateKEK))))
+
+	mux.Handle("GET /api/v1/security/keys/kek",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ListKEKs))))
+
 	return handler
 }

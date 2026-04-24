@@ -67,6 +67,7 @@ var Migrations = []string{
 		next_review_date BIGINT DEFAULT 0,
 		review_count INT DEFAULT 0,
 		review_notes TEXT,
+		wrapped_dek TEXT,
 		created_at BIGINT NOT NULL,
 		updated_at BIGINT NOT NULL
 	)`,
@@ -104,10 +105,11 @@ var Migrations = []string{
 		is_deleted BOOLEAN DEFAULT FALSE,
 		password_change_required BOOLEAN DEFAULT FALSE,
 		login_count INT DEFAULT 0,
+		last_login TIMESTAMP,
+		password_changed_at TIMESTAMP,
+		customer_id VARCHAR(50) DEFAULT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		last_login TIMESTAMP,
-		customer_id VARCHAR(50) DEFAULT NULL,
 		FOREIGN KEY (bank_id) REFERENCES banks(id) ON DELETE SET NULL
 	)`,
 
@@ -181,6 +183,7 @@ var Migrations = []string{
 		issued_at             BIGINT       NOT NULL,
 		expires_at            BIGINT       NOT NULL,
 		is_active             BOOLEAN      NOT NULL DEFAULT TRUE,
+		issuer_key_id		  VARCHAR(64),
 		created_at            TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (customer_id) REFERENCES kyc_records(customer_id) ON DELETE CASCADE
 		-- One active certificate per customer per requester.
@@ -188,13 +191,74 @@ var Migrations = []string{
 		-- UNIQUE (customer_id, requester_id)
 	)`,
 
-	// `ALTER TABLE certificates
-	// 	ADD COLUMN IF NOT EXISTS requester_public_key TEXT,
-	// 	ADD COLUMN IF NOT EXISTS verified_by VARCHAR(100),
-	// 	ADD COLUMN IF NOT EXISTS verification_date BIGINT;`,
+	// Password rotation policy
+	`CREATE TABLE IF NOT EXISTS password_policy (
+		id                   INT         PRIMARY KEY DEFAULT 1,
+		interval_months      INT         NOT NULL DEFAULT 3,
+		updated_by           VARCHAR(50),
+		updated_at           TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+		CONSTRAINT single_row CHECK (id = 1)
+	)`,
 
+	// System singleton flags (emergency lock, etc.)
+	`CREATE TABLE IF NOT EXISTS system_flags (
+		flag_key    VARCHAR(64) PRIMARY KEY,
+		flag_value  TEXT        NOT NULL,
+		updated_by  VARCHAR(50),
+		updated_at  TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+	)`,
+
+	// System signing key registry
+	// Holds current + all retired signing keys so historical certs stay
+	// verifiable after rotation. Private key is stored AES-encrypted with
+	// the KEK (see kek_keys below) — never in plaintext on disk.
+	`CREATE TABLE IF NOT EXISTS system_keys (
+		key_id                    VARCHAR(64) PRIMARY KEY,
+		key_type                  VARCHAR(10) NOT NULL,
+		key_size                  INT         NOT NULL,
+		public_key_pem            TEXT        NOT NULL,
+		private_key_encrypted     TEXT        NOT NULL,
+		wrapping_kek_id           VARCHAR(64) NOT NULL,
+		is_active                 BOOLEAN     NOT NULL DEFAULT FALSE,
+		valid_from                BIGINT      NOT NULL,
+		valid_until               BIGINT,
+		retired_at                BIGINT,
+		created_by                VARCHAR(50),
+		created_at                BIGINT      NOT NULL
+	)`,
+
+	// KEK registry (for AES envelope encryption)
+	// Stores KEK material wrapped by a bootstrap key sourced from env var
+	// KYC_ROOT_KEK (32 bytes base64). Rotate KEKs by generating a new one,
+	// re-wrapping every DEK, then retiring the old KEK.
+	`CREATE TABLE IF NOT EXISTS kek_keys (
+		kek_id              VARCHAR(64) PRIMARY KEY,
+		wrapped_key         TEXT        NOT NULL,
+		is_active           BOOLEAN     NOT NULL DEFAULT FALSE,
+		created_at          BIGINT      NOT NULL,
+		retired_at          BIGINT,
+		created_by          VARCHAR(50)
+	)`,
+
+	// Seed default (3 months) — only if no row exists yet.
+	`INSERT INTO password_policy (id, interval_months)
+	 VALUES (1, 3)
+	 ON CONFLICT (id) DO NOTHING`,
+
+	// Track when each user last changed their password. Treat NULL as "use created_at"
+	// for existing rows so the policy kicks in on their next login.
 	`ALTER TABLE users
-		ADD COLUMN IF NOT EXISTS customer_id VARCHAR(50) DEFAULT NULL`,
+	 ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`,
+
+	`UPDATE users
+	 SET    password_changed_at = created_at
+	 WHERE  password_changed_at IS NULL`,
+
+	`ALTER TABLE kyc_records
+	 ADD COLUMN IF NOT EXISTS wrapped_dek TEXT`,
+
+	`ALTER TABLE certificates
+	 ADD COLUMN IF NOT EXISTS issuer_key_id VARCHAR(64)`,
 
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_users_customer_id ON users(customer_id)`,
@@ -222,4 +286,10 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_certificates_requester  ON certificates(requester_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_expires_at ON certificates(expires_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_is_active   ON certificates(is_active)`,
+	`CREATE INDEX IF NOT EXISTS idx_certificates_issuer_key ON certificates(issuer_key_id)`,
+
+	// Only one key may be active at a time.
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_keys_active_unique ON system_keys (is_active) WHERE is_active = TRUE`,
+
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_kek_keys_active_unique ON kek_keys (is_active) WHERE is_active = TRUE`,
 }

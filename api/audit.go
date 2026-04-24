@@ -108,6 +108,18 @@ const (
 	ActionAuditLogRead = "AUDIT_LOG_READ"
 	// ActionSecurityAlertRead   = "SECURITY_ALERT_READ"
 	ActionSecurityAlertReview = "SECURITY_ALERT_REVIEWED"
+
+	// Password policy / security actions
+	ActionPasswordPolicyRead   = "PASSWORD_POLICY_READ"
+	ActionPasswordPolicyUpdate = "PASSWORD_POLICY_UPDATED"
+	ActionPasswordForceAll     = "PASSWORD_FORCE_RESET_ALL"
+	ActionEmergencyLock        = "EMERGENCY_LOCK_ENABLED"
+	ActionEmergencyUnlock      = "EMERGENCY_LOCK_DISABLED"
+
+	// Key rotation
+	ActionSigningKeyRotate = "SIGNING_KEY_ROTATED"
+	ActionKEKRotate        = "KEK_ROTATED"
+	ActionKEKRewrap        = "KEK_REWRAP_COMPLETED"
 )
 
 // ─── Resource type constants ──────────────────────────────────────────────────
@@ -121,4 +133,5 @@ const (
 	ResourceUser        = "USER"
 	ResourceAudit       = "AUDIT"
 	ResourceAlert       = "SECURITY_ALERT"
+	ResourceSecurity    = "SECURITY"
 )

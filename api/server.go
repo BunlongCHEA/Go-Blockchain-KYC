@@ -31,6 +31,8 @@ type Server struct {
 	verificationService *verification.VerificationService
 	monitoringService   *monitoring.MonitoringService
 	keyManager          *crypto.KeyManager
+	// envelope            *crypto.EnvelopeEncryptor
+	signingKeyMgr *crypto.SigningKeyManager
 }
 
 // NewServer creates a new server instance
@@ -57,8 +59,23 @@ func NewServer(
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	// Initialize encryption and signing key management
+	rootKEK := os.Getenv("KYC_ROOT_KEK")
+	envelope, err := crypto.NewEnvelopeEncryptor(rootKEK, s.storage.(*storage.PostgresStorage))
+	if err != nil {
+		return fmt.Errorf("envelope encryptor init: %w", err)
+	}
+	if err := envelope.Bootstrap("system"); err != nil {
+		return fmt.Errorf("KEK bootstrap: %w", err)
+	}
+
+	signingMgr := crypto.NewSigningKeyManager(s.storage.(*storage.PostgresStorage), envelope)
+	if _, err := signingMgr.Bootstrap(s.config.Crypto.Algorithm, s.config.Crypto.KeySize, "system"); err != nil {
+		return fmt.Errorf("signing key bootstrap: %w", err)
+	}
+
 	// Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, s.signingKeyMgr)
 
 	// Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)

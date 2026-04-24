@@ -44,7 +44,32 @@ Go-Blockchain-KYC/
     └── utils.go               # Utility functions
 ```
 
-- **Key Features**
+## 1. Understanding
+
+**Consensus**
+
+The consensus/ package is the agreement protocol for your blockchain when it runs across multiple nodes (e.g., multiple Go pods in Kubernetes, as hinted by kubernetes_discovery.go). Its job: when a new block needs to be added, all honest nodes must agree on the same block in the same order — otherwise each node has its own fork and the "shared KYC ledger" promise breaks.
+You have two implementations:
+
+- PBFT (pbft.go) — Practical Byzantine Fault Tolerance. Tolerates up to f malicious/faulty nodes out of 3f+1 total. Uses pre-prepare → prepare → commit phases with 2f+1 votes at each stage. Good when you don't trust all participants (e.g., multiple banks running nodes).
+- Raft (raft.go) — Leader-based, simpler, assumes nodes are honest but may crash. Elects a leader, replicates log entries. Good for a single-org deployment with crash fault tolerance.
+
+kubernetes_discovery.go uses DNS (headless service) to auto-discover peer pods so the node list updates as pods scale up/down.
+
+The plumbing is there, but server.go/handlers.go currently call blockchain.MineBlock() directly — local PoW mining, single-node. The consensus package isn't wired into the mining path yet. It's scaffolding for when you go multi-node.
+
+**crypto**
+
+Three distinct cryptographic jobs:
+
+- encryption.go — AES-256-GCM symmetric encryption for PII fields in kyc_records (id_number_encrypted, email_encrypted, phone_encrypted). Data at rest in Postgres is ciphertext; decryption happens in ReadKYC when decrypt=true. Also does PBKDF2 password hashing (HashPassword).
+- keys.go + signing.go — Asymmetric key management (RSA or ECDSA). The system key pair loaded via KeyManager.LoadKeyPair() is the signing identity of your KYC Blockchain System. Its purpose is signing Verification Certificates (models/verification_certificate.go): when a bank issues a cert saying "customer X is KYC-verified", you sign the payload with the system private key. Any external requester (another bank, a fintech) can verify the signature using the system public key PEM embedded in the certificate — no need to call your API to trust the cert.
+- generateKeyPair in handlers.go — a separate flow for requester keys. External services that will receive certificates generate their own RSA/ECDSA keypair; you store their public key + fingerprint in requester_keys so you can bind certificates to a specific recipient.
+
+So the .pem files serve two roles: (a) your system signing identity, (b) per-requester identity for external integrators.
+
+
+## 2. Key Features
 
 | Feature | Description |
 |---|---|
