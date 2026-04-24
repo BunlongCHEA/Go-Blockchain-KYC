@@ -107,7 +107,13 @@ spec:
                 secretKeyRef:
                   name: kyc-blockchain-secrets
                   key: ENCRYPTION_KEY
-            
+
+            - name: KYC_ROOT_KEK
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-blockchain-secrets
+                  key:  KYC_ROOT_KEK
+                    
             # Verification provider secrets
             - name: DIDIT_CLIENT_SECRET
               valueFrom:

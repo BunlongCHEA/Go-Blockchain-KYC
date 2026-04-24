@@ -245,20 +245,20 @@ var Migrations = []string{
 	 VALUES (1, 3)
 	 ON CONFLICT (id) DO NOTHING`,
 
-	// Track when each user last changed their password. Treat NULL as "use created_at"
-	// for existing rows so the policy kicks in on their next login.
-	`ALTER TABLE users
-	 ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`,
+	// // Track when each user last changed their password. Treat NULL as "use created_at"
+	// // for existing rows so the policy kicks in on their next login.
+	// `ALTER TABLE users
+	//  ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`,
 
-	`UPDATE users
-	 SET    password_changed_at = created_at
-	 WHERE  password_changed_at IS NULL`,
+	// `UPDATE users
+	//  SET    password_changed_at = created_at
+	//  WHERE  password_changed_at IS NULL`,
 
-	`ALTER TABLE kyc_records
-	 ADD COLUMN IF NOT EXISTS wrapped_dek TEXT`,
+	// `ALTER TABLE kyc_records
+	//  ADD COLUMN IF NOT EXISTS wrapped_dek TEXT`,
 
-	`ALTER TABLE certificates
-	 ADD COLUMN IF NOT EXISTS issuer_key_id VARCHAR(64)`,
+	// `ALTER TABLE certificates
+	//  ADD COLUMN IF NOT EXISTS issuer_key_id VARCHAR(64)`,
 
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_users_customer_id ON users(customer_id)`,

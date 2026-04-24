@@ -2155,10 +2155,20 @@ func (h *Handlers) IssueVerificationCertificate(w http.ResponseWriter, r *http.R
 		validityDays,
 	)
 
-	// Sign using KeyManager (supports both RSA and ECDSA)
-	// if err := cert.SignWithKeyManager(h.keyManager); err != nil {
-	if err := cert.SignWithSigningManager(h.signingKeyMgr); err != nil {
-		SendInternalError(w, "failed to sign certificate:  "+err.Error())
+	// Sign using the rotation-aware signing manager when available,
+	// falling back to the legacy key manager for compatibility.
+	if h.signingKeyMgr != nil {
+		if err := cert.SignWithSigningManager(h.signingKeyMgr); err != nil {
+			SendInternalError(w, "failed to sign certificate: "+err.Error())
+			return
+		}
+	} else if h.keyManager != nil {
+		if err := cert.SignWithKeyManager(h.keyManager); err != nil {
+			SendInternalError(w, "failed to sign certificate: "+err.Error())
+			return
+		}
+	} else {
+		SendInternalError(w, "no signing key manager available")
 		return
 	}
 
@@ -2269,16 +2279,34 @@ func (h *Handlers) VerifyCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.keyManager == nil {
-		SendInternalError(w, "key manager not available")
-		return
-	}
-
-	// Verify using KeyManager (handles both RSA and ECDSA)
-	err := cert.VerifyWithKeyManager(h.keyManager)
-	if err != nil {
-		SendBadRequest(w, "certificate signature verification failed: "+err.Error())
-		return
+	if h.signingKeyMgr == nil {
+		// Fallback path for deployments that haven't enabled rotation yet.
+		// Remove this branch once rotation is rolled out everywhere.
+		if h.keyManager == nil {
+			SendInternalError(w, "no signing key manager available")
+			return
+		}
+		if err := cert.VerifyWithKeyManager(h.keyManager); err != nil {
+			SendBadRequest(w, "certificate signature verification failed: "+err.Error())
+			return
+		}
+	} else {
+		// Rotation-aware verify.
+		// - New certs with issuer_key_id → verified against registry pubkey.
+		// - Legacy certs without issuer_key_id → verified against embedded pubkey.
+		// - Tampered certs where issuer_public_key doesn't match registry → rejected.
+		if err := cert.VerifyWithSigningManager(h.signingKeyMgr); err != nil {
+			// Audit the failed attempt before returning. Tamper attempts are
+			// exactly the events you want in the audit log.
+			h.audit(r, "CERTIFICATE_VERIFY_FAILED", ResourceCertificate, cert.CertificateID,
+				map[string]interface{}{
+					"certificate_id": cert.CertificateID,
+					"issuer_key_id":  cert.IssuerKeyID,
+					"reason":         err.Error(),
+				})
+			SendBadRequest(w, "certificate signature verification failed: "+err.Error())
+			return
+		}
 	}
 
 	// Optionally verify current KYC status matches certificate

@@ -110,6 +110,7 @@ type CryptoConfig struct {
 	AESKeySize    int    `json:"aes_key_size"`
 	KeyStorePath  string `json:"key_store_path"`
 	EncryptionKey string `json:"encryption_key"`
+	RootKEK       string `json:"root_kek,omitempty"`
 }
 
 // ConsensusConfig holds consensus configuration
@@ -181,6 +182,18 @@ func (p *PythonServiceConfig) GetURL() string {
 		return p.URL
 	}
 	return "http://localhost:5001"
+}
+
+// GetRootKEK returns the 32-byte AES root key (base64) used to wrap DB-stored KEKs
+// To generate a new one:
+//
+//	openssl rand -base64 32
+//	# or: head -c 32 /dev/urandom | base64
+func (c *CryptoConfig) GetRootKEK() string {
+	if v := os.Getenv("KYC_ROOT_KEK"); v != "" {
+		return v
+	}
+	return c.RootKEK
 }
 
 // Returns the configured into default values if not set in the config file

@@ -15,11 +15,14 @@
 package crypto
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -333,5 +336,43 @@ func parsePrivateKeyPEM(pemStr string) (interface{}, error) {
 		return x509.ParseECPrivateKey(block.Bytes)
 	default:
 		return nil, fmt.Errorf("unsupported PEM type: %s", block.Type)
+	}
+}
+
+// VerifyWithPEM verifies a signature against a raw public key PEM.
+// Handles both RSA (PKCS#1v15) and ECDSA (ASN.1) based on PEM block type.
+func (m *SigningKeyManager) VerifyWithPEM(data []byte, signatureB64, publicKeyPEM string) error {
+	block, _ := pem.Decode([]byte(publicKeyPEM))
+	if block == nil {
+		return errors.New("invalid issuer public key PEM")
+	}
+	sig, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	hash := sha256.Sum256(data)
+
+	if block.Type == "RSA PUBLIC KEY" {
+		pub, err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("parse RSA pubkey: %w", err)
+		}
+		return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hash[:], sig)
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse pubkey: %w", err)
+	}
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(k, crypto.SHA256, hash[:], sig)
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(k, hash[:], sig) {
+			return errors.New("ECDSA signature verification failed")
+		}
+		return nil
+	default:
+		return errors.New("unsupported public key type")
 	}
 }

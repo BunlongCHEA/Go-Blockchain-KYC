@@ -60,7 +60,11 @@ func NewServer(
 // Start starts the HTTP server
 func (s *Server) Start() error {
 	// Initialize encryption and signing key management
-	rootKEK := os.Getenv("KYC_ROOT_KEK")
+	rootKEK := s.config.Crypto.GetRootKEK()
+	if rootKEK == "" {
+		return fmt.Errorf("KYC_ROOT_KEK is not set (check env var or crypto.root_kek in config)")
+	}
+
 	envelope, err := crypto.NewEnvelopeEncryptor(rootKEK, s.storage.(*storage.PostgresStorage))
 	if err != nil {
 		return fmt.Errorf("envelope encryptor init: %w", err)

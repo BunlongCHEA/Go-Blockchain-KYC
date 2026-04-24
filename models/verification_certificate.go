@@ -35,15 +35,15 @@ type VerificationCertificate struct {
 	// Issuer Info
 	IssuerID     string `json:"issuer_id"`
 	IssuerPubKey string `json:"issuer_public_key"`
-	KeyType      string `json:"key_type"` // "RSA" or "ECDSA"
+	IssuerKeyID  string `json:"issuer_key_id,omitempty"` // key ID for signature verification (if using KeyManager)
+
+	KeyType string `json:"key_type"` // "RSA" or "ECDSA"
 
 	// Signature
 	Signature string `json:"signature"`
 	SignedAt  int64  `json:"signed_at"`
 
 	IsActive bool `json:"is_active"` // for soft deletion and history tracking
-
-	IssuerKeyID string `json:"issuer_key_id,omitempty"` // key ID for signature verification (if using KeyManager)
 }
 
 // KYCSummary contains non-sensitive KYC info for certificate
@@ -68,6 +68,7 @@ type CertificatePayload struct {
 	RequesterPubKey  string     `json:"requester_public_key"`
 	KYCSummary       KYCSummary `json:"kyc_summary"`
 	IssuerID         string     `json:"issuer_id"`
+	IssuerKeyID      string     `json:"issuer_key_id,omitempty"` // omitempty keeps legacy payloads identical
 	SignedAt         int64      `json:"signed_at"`
 }
 
@@ -116,6 +117,7 @@ func (vc *VerificationCertificate) GetPayload() CertificatePayload {
 		RequesterPubKey:  vc.RequesterPubKey,
 		KYCSummary:       vc.KYCSummary,
 		IssuerID:         vc.IssuerID,
+		IssuerKeyID:      vc.IssuerKeyID,
 		SignedAt:         vc.SignedAt,
 	}
 }
@@ -267,7 +269,9 @@ func (vc *VerificationCertificate) CustomerName() string {
 	return vc.KYCSummary.FirstName + " " + vc.KYCSummary.LastName
 }
 
-// Signing with the new rotation-aware path:
+// SignWithSigningManager signs the certificate using the currently active key
+// in the signing key registry. Stamps IssuerKeyID + IssuerPubKey + KeyType.
+// This is the rotation-aware replacement for SignWithKeyManager.
 func (vc *VerificationCertificate) SignWithSigningManager(m *kycCrypto.SigningKeyManager) error {
 	priv, keyType, keyID, err := m.ActivePrivate()
 	if err != nil {
@@ -277,9 +281,13 @@ func (vc *VerificationCertificate) SignWithSigningManager(m *kycCrypto.SigningKe
 	if err != nil {
 		return err
 	}
+
+	// Stamp issuer metadata BEFORE computing payload bytes — the signature
+	// binds the cert to a specific key version.
 	vc.IssuerPubKey = pubPEM
 	vc.KeyType = keyType
 	vc.IssuerKeyID = keyID
+	vc.SignedAt = time.Now().Unix()
 
 	payloadBytes, err := vc.GetPayloadBytes()
 	if err != nil {
@@ -301,6 +309,45 @@ func (vc *VerificationCertificate) SignWithSigningManager(m *kycCrypto.SigningKe
 		return err
 	}
 	vc.Signature = base64.StdEncoding.EncodeToString(sig)
-	vc.SignedAt = time.Now().Unix()
 	return nil
+}
+
+// VerifyWithSigningManager is the rotation-aware verifier
+// External requesters (banks, fintechs) that verify OFFLINE using the
+// public key embedded in the cert still work in both paths — they don't
+// need to know about the registry. The registry is OUR extra check when
+// WE do the verify.
+func (vc *VerificationCertificate) VerifyWithSigningManager(m *kycCrypto.SigningKeyManager) error {
+	payloadBytes, err := vc.GetPayloadBytes()
+	if err != nil {
+		return fmt.Errorf("payload serialize: %w", err)
+	}
+
+	// Determine which public key PEM to trust.
+	trustedPubPEM := vc.IssuerPubKey // fallback for legacy certs
+
+	if vc.IssuerKeyID != "" {
+		registryPEM, lookupErr := m.LookupPublicKey(vc.IssuerKeyID)
+		if lookupErr != nil {
+			// IssuerKeyID was stamped but we don't have it in our registry.
+			// Either data was tampered with or this cert came from a different
+			// system. Reject.
+			return fmt.Errorf("unknown issuer_key_id %q — certificate not from this system", vc.IssuerKeyID)
+		}
+		// Consistency check — embedded pubkey should match what's in our registry
+		// for that key_id. If not, the cert was tampered with (attacker swapped
+		// pubkey hoping we'd trust the embedded value).
+		if vc.IssuerPubKey != "" && vc.IssuerPubKey != registryPEM {
+			return errors.New("certificate issuer_public_key does not match registry — possible tampering")
+		}
+		trustedPubPEM = registryPEM
+	}
+
+	if trustedPubPEM == "" {
+		return errors.New("certificate has no issuer public key and no issuer_key_id")
+	}
+
+	// Verify using the manager's generic verify-with-PEM helper.
+	// (This internally parses the PEM and picks RSA vs ECDSA.)
+	return m.VerifyWithPEM(payloadBytes, vc.Signature, trustedPubPEM)
 }

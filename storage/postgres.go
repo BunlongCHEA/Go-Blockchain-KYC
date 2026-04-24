@@ -2126,8 +2126,8 @@ func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) 
 			certificate_id, customer_id, customer_name, requester_id,
 			requester_public_key, issuer_id, issuer_public_key,
 			status, verified_by, verification_date,
-			key_type, signature, kyc_summary, issued_at, expires_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, TRUE)
+			key_type, signature, kyc_summary, issued_at, expires_at, is_active, issuer_key_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, TRUE,$16)
 	`
 
 	// ON CONFLICT (customer_id, requester_id) DO UPDATE SET
@@ -2161,6 +2161,7 @@ func (p *PostgresStorage) SaveCertificate(cert *models.VerificationCertificate) 
 		summaryJSON,
 		cert.SignedAt, // (time of signing)
 		cert.ExpiresAt,
+		cert.IssuerKeyID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save certificate: %w", err)
@@ -2213,7 +2214,7 @@ func (p *PostgresStorage) ListCertificates(requesterID string, limit int, includ
 		SELECT certificate_id, customer_id, customer_name, requester_id,
 		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
 		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
-		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE)
+		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary, issued_at, expires_at, COALESCE(is_active, TRUE), COALESCE(issuer_key_id,'')
 		FROM certificates`
 
 	var (
@@ -2293,6 +2294,7 @@ func scanCertificate(row *sql.Row) (*models.VerificationCertificate, error) {
 		&cert.SignedAt,
 		&cert.ExpiresAt,
 		&cert.IsActive,
+		&cert.IssuerKeyID,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("certificate not found")
@@ -2329,6 +2331,7 @@ func scanCertificateRow(rows *sql.Rows) (*models.VerificationCertificate, error)
 		&cert.SignedAt,
 		&cert.ExpiresAt,
 		&cert.IsActive,
+		&cert.IssuerKeyID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan certificate row: %w", err)
@@ -2349,7 +2352,7 @@ func (p *PostgresStorage) GetCertificatesByCustomer(customerID string) ([]*model
 		       COALESCE(requester_public_key,''), issuer_id, COALESCE(issuer_public_key,''),
 		       status, COALESCE(verified_by,''), COALESCE(verification_date,0),
 		       COALESCE(key_type,''), COALESCE(signature,''), kyc_summary,
-		       issued_at, expires_at, COALESCE(is_active, TRUE)
+		       issued_at, expires_at, COALESCE(is_active, TRUE), COALESCE(issuer_key_id,'')
 		FROM   certificates
 		WHERE  customer_id = $1
 		AND    is_active   = TRUE
