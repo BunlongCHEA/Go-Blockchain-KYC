@@ -15,7 +15,9 @@ Go-Blockchain-KYC/
 ├── crypto/
 │   ├── keys.go                # Key pair generation (RSA/ECDSA)
 │   ├── signing.go             # Digital signature operations
-│   └── encryption.go          # Data encryption (AES-256)
+│   ├── encryption.go          # Data encryption (AES-256)
+│   ├── crypto_envelope.go     # Decrypt and encrypt data of KYC
+│   └── crypto_signing_registry.go  # Change certificate Stamp (System Signing Key) for KYC & External-System (Bank, etc)
 ├── auth/
 │   ├── auth.go                # Authentication
 │   ├── jwt.go                 # JWT token management
@@ -39,7 +41,9 @@ Go-Blockchain-KYC/
 │   ├── routes.go              # API routes
 │   ├── handlers.go            # Request handlers
 │   ├── middleware.go          # Middleware (auth, logging)
-│   └── responses.go           # Response helpers
+│   ├── responses.go           # Response helpers
+│   ├── alert_scheduler.go     # Alert For SMTP Email, Webhook Configuration
+│   └── audit.go               # For Audit tracking Configuration Info
 |__ utils/
     └── utils.go               # Utility functions
 ```
@@ -69,6 +73,8 @@ Three distinct cryptographic jobs:
 So the .pem files serve two roles: (a) your system signing identity, (b) per-requester identity for external integrators.
 
 ### 🔑 System Signing Key Rotation
+
+Think of this like changing the stamp used to sign official documents.
 
 ```bash
 BEFORE rotation:                    AFTER rotation:

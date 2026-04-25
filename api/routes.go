@@ -368,5 +368,41 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin)(
 				http.HandlerFunc(handlers.ListKEKs))))
 
+	// ==================== Integration API Key Routes ====================
+	// All routes require admin or integration_service role.
+	// integration_service can only call stats (so the gateway can self-report).
+
+	// GET  /api/v1/integration/keys             → list all keys
+	// GET  /api/v1/integration/keys?hash=<sha>  → lookup by hash (gateway)
+	mux.Handle("GET /api/v1/integration/keys",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
+				http.HandlerFunc(handlers.ListIntegrationKeys))))
+
+	// POST /api/v1/integration/keys → upsert single key (admin UI)
+	mux.Handle("POST /api/v1/integration/keys",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.UpsertIntegrationKey))))
+
+	// POST /api/v1/integration/keys/sync → bulk upsert (admin sync)
+	mux.Handle("POST /api/v1/integration/keys/sync",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.SyncIntegrationKeys))))
+
+	// POST /api/v1/integration/keys/stats → increment stats (gateway hot path)
+	// integration_service role can call this (gateway uses that role's JWT)
+	mux.Handle("POST /api/v1/integration/keys/stats",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
+				http.HandlerFunc(handlers.IncrementIntegrationKeyStats))))
+
+	// DELETE /api/v1/integration/keys?id=<id> → soft delete (admin only)
+	mux.Handle("DELETE /api/v1/integration/keys",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.DeleteIntegrationKey))))
+
 	return handler
 }

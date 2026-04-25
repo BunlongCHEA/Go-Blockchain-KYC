@@ -100,4 +100,13 @@ type Storage interface {
 
 	// Returns all active certificates for a specific customer.
 	GetCertificatesByCustomer(customerID string) ([]*models.VerificationCertificate, error)
+
+	// Integration Key operations
+	ListIntegrationKeys() ([]*models.IntegrationKey, error)
+	FindIntegrationKeyByHash(hash string) (*models.IntegrationKey, error)
+	UpsertIntegrationKey(key *models.IntegrationKey) error
+	SyncIntegrationKeys(keys []*models.IntegrationKey) error
+	IncrementIntegrationKeyStats(keyID, scope string) error
+	SoftDeleteIntegrationKey(keyID string) error
+	GetIntegrationKeyByID(keyID string) (*models.IntegrationKey, error)
 }

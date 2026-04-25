@@ -4521,3 +4521,182 @@ func (h *Handlers) ListKEKs(w http.ResponseWriter, r *http.Request) {
 	}
 	SendSuccess(w, "", map[string]interface{}{"keks": keks, "count": len(keks)})
 }
+
+// ── Integration External API ─────────────────────────────────────────────────
+
+// GET /api/v1/integration/keys
+// Returns all non-deleted keys.
+// Query param: hash=<sha256hex>  → single lookup by hash (gateway hot path).
+func (h *Handlers) ListIntegrationKeys(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	// Single-key lookup by hash — used by gateway.ts findKeyByHash()
+	if hash := r.URL.Query().Get("hash"); hash != "" {
+		key, err := pgStore.FindIntegrationKeyByHash(hash)
+		if err != nil {
+			SendInternalError(w, "lookup failed: "+err.Error())
+			return
+		}
+		if key == nil {
+			SendSuccess(w, "", nil) // null — caller checks for nil
+			return
+		}
+		SendSuccess(w, "", key)
+		return
+	}
+
+	// Full list — used by the admin UI / keys page
+	keys, err := pgStore.ListIntegrationKeys()
+	if err != nil {
+		SendInternalError(w, "list failed: "+err.Error())
+		return
+	}
+	SendSuccess(w, "", map[string]interface{}{
+		"keys":  keys,
+		"count": len(keys),
+	})
+}
+
+// POST /api/v1/integration/keys
+// Upsert a single key. Used by the admin UI when creating or editing a key.
+func (h *Handlers) UpsertIntegrationKey(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	var key models.IntegrationKey
+	if err := json.NewDecoder(r.Body).Decode(&key); err != nil {
+		SendBadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+	if key.ID == "" || key.KeyHash == "" {
+		SendBadRequest(w, "id and key_hash are required")
+		return
+	}
+
+	if err := pgStore.UpsertIntegrationKey(&key); err != nil {
+		SendInternalError(w, "upsert failed: "+err.Error())
+		return
+	}
+
+	user, _ := GetUserFromContext(r)
+	actor := "unknown"
+	if user != nil {
+		actor = user.Username
+	}
+	h.audit(r, "INTEGRATION_KEY_UPSERTED", "INTEGRATION_KEY", key.ID,
+		map[string]interface{}{"key_name": key.Name, "actor": actor})
+
+	SendSuccess(w, "key saved", map[string]interface{}{"id": key.ID})
+}
+
+// POST /api/v1/integration/keys/sync
+// Bulk upsert. Mirrors POST /api/integration/sync in the NextJS API routes.
+// Body: { "keys": [ ...IntegrationKey ] }
+func (h *Handlers) SyncIntegrationKeys(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	var req struct {
+		Keys []*models.IntegrationKey `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+	if len(req.Keys) == 0 {
+		SendBadRequest(w, "keys array is empty")
+		return
+	}
+
+	if err := pgStore.SyncIntegrationKeys(req.Keys); err != nil {
+		SendInternalError(w, "sync failed: "+err.Error())
+		return
+	}
+
+	h.audit(r, "INTEGRATION_KEYS_SYNCED", "INTEGRATION_KEY", "",
+		map[string]interface{}{"count": len(req.Keys)})
+
+	SendSuccess(w, "sync complete", map[string]interface{}{"synced": len(req.Keys)})
+}
+
+// POST /api/v1/integration/keys/stats
+// Increment request stats for one key after a successful gateway proxy.
+// Called non-blocking by gateway.ts: incrementStats(key.id, scope).
+// Body: { "key_id": "...", "scope": "kyc:read" }
+func (h *Handlers) IncrementIntegrationKeyStats(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	var req struct {
+		KeyID string `json:"key_id"`
+		Scope string `json:"scope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.KeyID == "" || req.Scope == "" {
+		SendBadRequest(w, "key_id and scope are required")
+		return
+	}
+
+	if err := pgStore.IncrementIntegrationKeyStats(req.KeyID, req.Scope); err != nil {
+		// Non-fatal for the caller — log but return 200 so the gateway doesn't retry
+		SendSuccess(w, "stats update failed (non-fatal): "+err.Error(), nil)
+		return
+	}
+
+	SendSuccess(w, "ok", nil)
+}
+
+// DELETE /api/v1/integration/keys?id=<id>
+// Soft-delete a key (sets is_deleted=true, is_active=false).
+func (h *Handlers) DeleteIntegrationKey(w http.ResponseWriter, r *http.Request) {
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		SendError(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	keyID := r.URL.Query().Get("id")
+	if keyID == "" {
+		// Also accept body (for clients that can't send query params on DELETE)
+		var req struct {
+			KeyID string `json:"key_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		keyID = req.KeyID
+	}
+	if keyID == "" {
+		SendBadRequest(w, "id is required")
+		return
+	}
+
+	if err := pgStore.SoftDeleteIntegrationKey(keyID); err != nil {
+		SendInternalError(w, "delete failed: "+err.Error())
+		return
+	}
+
+	user, _ := GetUserFromContext(r)
+	actor := "unknown"
+	if user != nil {
+		actor = user.Username
+	}
+	h.audit(r, "INTEGRATION_KEY_DELETED", "INTEGRATION_KEY", keyID,
+		map[string]interface{}{"actor": actor})
+
+	SendSuccess(w, "key deleted", map[string]interface{}{"id": keyID})
+}

@@ -120,6 +120,12 @@ const (
 	ActionSigningKeyRotate = "SIGNING_KEY_ROTATED"
 	ActionKEKRotate        = "KEK_ROTATED"
 	ActionKEKRewrap        = "KEK_REWRAP_COMPLETED"
+
+	// Integration keys (API keys for external integrators)
+	ActionIntegrationKeyUpsert = "INTEGRATION_KEY_UPSERTED"
+	ActionIntegrationKeyDelete = "INTEGRATION_KEY_DELETED"
+	ActionIntegrationKeysSync  = "INTEGRATION_KEYS_SYNCED"
+	ResourceIntegrationKey     = "INTEGRATION_KEY"
 )
 
 // ─── Resource type constants ──────────────────────────────────────────────────

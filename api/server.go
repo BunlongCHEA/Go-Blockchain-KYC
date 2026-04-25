@@ -32,7 +32,7 @@ type Server struct {
 	monitoringService   *monitoring.MonitoringService
 	keyManager          *crypto.KeyManager
 	// envelope            *crypto.EnvelopeEncryptor
-	signingKeyMgr *crypto.SigningKeyManager
+	// signingKeyMgr *crypto.SigningKeyManager
 }
 
 // NewServer creates a new server instance

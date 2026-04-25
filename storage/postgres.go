@@ -11,6 +11,7 @@ import (
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
@@ -2797,4 +2798,290 @@ func (p *PostgresStorage) GetPasswordChangedAt(userID string) (time.Time, error)
 		return time.Time{}, nil
 	}
 	return t.Time, nil
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+func scanIntegrationKey(row interface {
+	Scan(...interface{}) error
+}) (*models.IntegrationKey, error) {
+	k := &models.IntegrationKey{}
+	var scopesArr []string
+	var scopeJSON []byte
+	var scopeTodayJSON []byte
+
+	err := row.Scan(
+		&k.ID,
+		&k.Name,
+		&k.Description,
+		&k.Organization,
+		&k.KeyPrefix,
+		&k.KeyHash,
+		&k.IsActive,
+		&k.IsDeleted,
+		pq.Array(&scopesArr),
+		&k.CreatedAt,
+		&k.ExpiresAt,
+		&k.LastUsedAt,
+		&k.RequestCount,
+		&k.RequestCountToday,
+		&k.TodayDate,
+		&scopeJSON,
+		&scopeTodayJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	k.Scopes = scopesArr
+	if len(scopeJSON) > 0 {
+		json.Unmarshal(scopeJSON, &k.ScopeCounts)
+	}
+	if k.ScopeCounts == nil {
+		k.ScopeCounts = map[string]int{}
+	}
+	if len(scopeTodayJSON) > 0 {
+		json.Unmarshal(scopeTodayJSON, &k.ScopeCountsToday)
+	}
+	if k.ScopeCountsToday == nil {
+		k.ScopeCountsToday = map[string]int{}
+	}
+	return k, nil
+}
+
+const integrationKeyColumns = `
+	id, name, description, organization, key_prefix, key_hash,
+	is_active, is_deleted, scopes,
+	created_at, expires_at, last_used_at,
+	request_count, request_count_today, today_date,
+	scope_counts, scope_counts_today`
+
+// ─── ListIntegrationKeys ─────────────────────────────────────────────────────
+// Returns all non-deleted keys ordered newest first.
+
+func (p *PostgresStorage) ListIntegrationKeys() ([]*models.IntegrationKey, error) {
+	rows, err := p.db.Query(`
+		SELECT ` + integrationKeyColumns + `
+		FROM   integration_api_keys
+		WHERE  is_deleted = FALSE
+		ORDER  BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list integration keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []*models.IntegrationKey
+	for rows.Next() {
+		k, err := scanIntegrationKey(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan integration key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if keys == nil {
+		keys = []*models.IntegrationKey{}
+	}
+	return keys, nil
+}
+
+// ─── FindIntegrationKeyByHash ────────────────────────────────────────────────
+// Hot path — called on every authenticated integration request.
+
+func (p *PostgresStorage) FindIntegrationKeyByHash(hash string) (*models.IntegrationKey, error) {
+	row := p.db.QueryRow(`
+		SELECT `+integrationKeyColumns+`
+		FROM   integration_api_keys
+		WHERE  key_hash = $1
+		LIMIT  1
+	`, hash)
+
+	k, err := scanIntegrationKey(row)
+	if err == sql.ErrNoRows {
+		return nil, nil // not found — caller handles 401
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find integration key by hash: %w", err)
+	}
+	return k, nil
+}
+
+// ─── UpsertIntegrationKey ────────────────────────────────────────────────────
+// Insert or update a single key. key_hash is immutable after creation.
+
+func (p *PostgresStorage) UpsertIntegrationKey(k *models.IntegrationKey) error {
+	scopeJSON, _ := json.Marshal(k.ScopeCounts)
+	scopeTodayJSON, _ := json.Marshal(k.ScopeCountsToday)
+	if scopeJSON == nil {
+		scopeJSON = []byte("{}")
+	}
+	if scopeTodayJSON == nil {
+		scopeTodayJSON = []byte("{}")
+	}
+
+	_, err := p.db.Exec(`
+		INSERT INTO integration_api_keys (
+			id, name, description, organization, key_prefix, key_hash,
+			is_active, is_deleted, scopes,
+			created_at, expires_at, last_used_at,
+			request_count, request_count_today, today_date,
+			scope_counts, scope_counts_today
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,
+			$7,$8,$9,
+			$10,$11,$12,
+			$13,$14,$15,
+			$16,$17
+		)
+		ON CONFLICT (id) DO UPDATE SET
+			name                = EXCLUDED.name,
+			description         = EXCLUDED.description,
+			organization        = EXCLUDED.organization,
+			key_prefix          = EXCLUDED.key_prefix,
+			is_active           = EXCLUDED.is_active,
+			is_deleted          = EXCLUDED.is_deleted,
+			scopes              = EXCLUDED.scopes,
+			expires_at          = EXCLUDED.expires_at,
+			last_used_at        = EXCLUDED.last_used_at,
+			request_count       = EXCLUDED.request_count,
+			request_count_today = EXCLUDED.request_count_today,
+			today_date          = EXCLUDED.today_date,
+			scope_counts        = EXCLUDED.scope_counts,
+			scope_counts_today  = EXCLUDED.scope_counts_today
+		-- key_hash is intentionally NOT updated (immutable)
+	`,
+		k.ID, k.Name, k.Description, k.Organization, k.KeyPrefix, k.KeyHash,
+		k.IsActive, k.IsDeleted, pq.Array(k.Scopes),
+		k.CreatedAt, k.ExpiresAt, k.LastUsedAt,
+		k.RequestCount, k.RequestCountToday, k.TodayDate,
+		scopeJSON, scopeTodayJSON,
+	)
+	return err
+}
+
+// ─── SyncIntegrationKeys ─────────────────────────────────────────────────────
+// Bulk upsert in a single transaction. Mirrors syncKeys() in db.ts.
+// Does NOT delete — only soft-deletes via is_deleted flag on individual keys.
+
+func (p *PostgresStorage) SyncIntegrationKeys(keys []*models.IntegrationKey) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, k := range keys {
+		scopeJSON, _ := json.Marshal(k.ScopeCounts)
+		scopeTodayJSON, _ := json.Marshal(k.ScopeCountsToday)
+		if scopeJSON == nil {
+			scopeJSON = []byte("{}")
+		}
+		if scopeTodayJSON == nil {
+			scopeTodayJSON = []byte("{}")
+		}
+
+		_, err := tx.Exec(`
+			INSERT INTO integration_api_keys (
+				id, name, description, organization, key_prefix, key_hash,
+				is_active, is_deleted, scopes,
+				created_at, expires_at, last_used_at,
+				request_count, request_count_today, today_date,
+				scope_counts, scope_counts_today
+			) VALUES (
+				$1,$2,$3,$4,$5,$6,
+				$7,$8,$9,
+				$10,$11,$12,
+				$13,$14,$15,
+				$16,$17
+			)
+			ON CONFLICT (id) DO UPDATE SET
+				name                = EXCLUDED.name,
+				description         = EXCLUDED.description,
+				organization        = EXCLUDED.organization,
+				key_prefix          = EXCLUDED.key_prefix,
+				is_active           = EXCLUDED.is_active,
+				is_deleted          = EXCLUDED.is_deleted,
+				scopes              = EXCLUDED.scopes,
+				expires_at          = EXCLUDED.expires_at,
+				last_used_at        = EXCLUDED.last_used_at,
+				request_count       = EXCLUDED.request_count,
+				request_count_today = EXCLUDED.request_count_today,
+				today_date          = EXCLUDED.today_date,
+				scope_counts        = EXCLUDED.scope_counts,
+				scope_counts_today  = EXCLUDED.scope_counts_today
+		`,
+			k.ID, k.Name, k.Description, k.Organization, k.KeyPrefix, k.KeyHash,
+			k.IsActive, k.IsDeleted, pq.Array(k.Scopes),
+			k.CreatedAt, k.ExpiresAt, k.LastUsedAt,
+			k.RequestCount, k.RequestCountToday, k.TodayDate,
+			scopeJSON, scopeTodayJSON,
+		)
+		if err != nil {
+			return fmt.Errorf("sync key %s: %w", k.ID, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// ─── IncrementIntegrationKeyStats ────────────────────────────────────────────
+// Mirrors incrementStats() in db.ts exactly.
+// Resets today counters automatically when the date rolls over.
+// One UPDATE per gateway request — kept minimal for performance.
+
+func (p *PostgresStorage) IncrementIntegrationKeyStats(keyID, scope string) error {
+	today := time.Now().Format("Mon Jan 2 2006") // matches JS new Date().toDateString()
+
+	_, err := p.db.Exec(`
+		UPDATE integration_api_keys SET
+			request_count       = request_count + 1,
+			last_used_at        = $1,
+			-- Reset today counters when date changes
+			request_count_today = CASE
+				WHEN today_date = $2 THEN request_count_today + 1
+				ELSE 1
+			END,
+			today_date          = $2,
+			scope_counts        = jsonb_set(
+				scope_counts,
+				ARRAY[$3],
+				to_jsonb(COALESCE((scope_counts->>$3)::int, 0) + 1)
+			),
+			scope_counts_today  = CASE
+				WHEN today_date = $2
+					THEN jsonb_set(
+						scope_counts_today,
+						ARRAY[$3],
+						to_jsonb(COALESCE((scope_counts_today->>$3)::int, 0) + 1)
+					)
+				ELSE jsonb_build_object($3, 1)
+			END
+		WHERE id = $4
+	`, time.Now().UnixMilli(), today, scope, keyID)
+
+	return err
+}
+
+// ─── SoftDeleteIntegrationKey ─────────────────────────────────────────────────
+
+func (p *PostgresStorage) SoftDeleteIntegrationKey(keyID string) error {
+	_, err := p.db.Exec(`
+		UPDATE integration_api_keys
+		SET    is_deleted = TRUE, is_active = FALSE
+		WHERE  id = $1
+	`, keyID)
+	return err
+}
+
+// ─── GetIntegrationKeyByID ────────────────────────────────────────────────────
+
+func (p *PostgresStorage) GetIntegrationKeyByID(keyID string) (*models.IntegrationKey, error) {
+	row := p.db.QueryRow(`
+		SELECT `+integrationKeyColumns+`
+		FROM   integration_api_keys
+		WHERE  id = $1
+	`, keyID)
+	k, err := scanIntegrationKey(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return k, err
 }

@@ -240,25 +240,33 @@ var Migrations = []string{
 		created_by          VARCHAR(50)
 	)`,
 
+	// Integration API keys
+	// Stores API keys issued to external integrators via the NextJS admin UI.
+	// Replaces the .int_keys_store.json file approach — now Go owns this table.
+	`CREATE TABLE IF NOT EXISTS integration_api_keys (
+		id                  VARCHAR(36)   PRIMARY KEY,
+		name                VARCHAR(255)  NOT NULL,
+		description         TEXT          NOT NULL DEFAULT '',
+		organization        VARCHAR(255)  NOT NULL DEFAULT '',
+		key_prefix          VARCHAR(20)   NOT NULL,
+		key_hash            VARCHAR(64)   NOT NULL UNIQUE,
+		is_active           BOOLEAN       NOT NULL DEFAULT TRUE,
+		is_deleted          BOOLEAN       NOT NULL DEFAULT FALSE,
+		scopes              TEXT[]        NOT NULL DEFAULT '{}',
+		created_at          BIGINT        NOT NULL,
+		expires_at          BIGINT        NOT NULL DEFAULT 0,
+		last_used_at        BIGINT        NOT NULL DEFAULT 0,
+		request_count       INTEGER       NOT NULL DEFAULT 0,
+		request_count_today INTEGER       NOT NULL DEFAULT 0,
+		today_date          VARCHAR(32)   NOT NULL DEFAULT '',
+		scope_counts        JSONB         NOT NULL DEFAULT '{}',
+		scope_counts_today  JSONB         NOT NULL DEFAULT '{}'
+	)`,
+
 	// Seed default (3 months) — only if no row exists yet.
 	`INSERT INTO password_policy (id, interval_months)
 	 VALUES (1, 3)
 	 ON CONFLICT (id) DO NOTHING`,
-
-	// // Track when each user last changed their password. Treat NULL as "use created_at"
-	// // for existing rows so the policy kicks in on their next login.
-	// `ALTER TABLE users
-	//  ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`,
-
-	// `UPDATE users
-	//  SET    password_changed_at = created_at
-	//  WHERE  password_changed_at IS NULL`,
-
-	// `ALTER TABLE kyc_records
-	//  ADD COLUMN IF NOT EXISTS wrapped_dek TEXT`,
-
-	// `ALTER TABLE certificates
-	//  ADD COLUMN IF NOT EXISTS issuer_key_id VARCHAR(64)`,
 
 	// Create indexes
 	`CREATE INDEX IF NOT EXISTS idx_users_customer_id ON users(customer_id)`,
@@ -287,6 +295,9 @@ var Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_certificates_expires_at ON certificates(expires_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_is_active   ON certificates(is_active)`,
 	`CREATE INDEX IF NOT EXISTS idx_certificates_issuer_key ON certificates(issuer_key_id)`,
+
+	`CREATE INDEX IF NOT EXISTS idx_int_keys_hash ON integration_api_keys(key_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_int_keys_active ON integration_api_keys(is_active) WHERE is_deleted = FALSE`,
 
 	// Only one key may be active at a time.
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_keys_active_unique ON system_keys (is_active) WHERE is_active = TRUE`,
