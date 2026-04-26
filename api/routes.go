@@ -382,13 +382,13 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// POST /api/v1/integration/keys → upsert single key (admin UI)
 	mux.Handle("POST /api/v1/integration/keys",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.UpsertIntegrationKey))))
 
 	// POST /api/v1/integration/keys/sync → bulk upsert (admin sync)
 	mux.Handle("POST /api/v1/integration/keys/sync",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.SyncIntegrationKeys))))
 
 	// POST /api/v1/integration/keys/stats → increment stats (gateway hot path)
@@ -401,7 +401,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 	// DELETE /api/v1/integration/keys?id=<id> → soft delete (admin only)
 	mux.Handle("DELETE /api/v1/integration/keys",
 		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.DeleteIntegrationKey))))
 
 	return handler
