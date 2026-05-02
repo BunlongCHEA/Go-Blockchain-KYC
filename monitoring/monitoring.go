@@ -592,12 +592,15 @@ func (m *MonitoringService) GetAlertCount() map[RiskLevel]int {
 	return counts
 }
 
-// isSystemUser returns true for pseudo-user IDs assigned by the Logging
-// middleware to unauthenticated or public traffic. These labels must never
-// trigger security alerts or auto-block actions.
+// isSystemUser returns true for pseudo-user IDs that should never trigger
+// auto-block: unauthenticated middleware labels and anon:IP tracking keys.
 func isSystemUser(userID string) bool {
 	switch userID {
 	case "", "anonymous", "auth:login", "auth:register", "public:verify", "system":
+		return true
+	}
+	// "anon:<ip>" labels used by recordFailedAuth — track but never auto-block
+	if strings.HasPrefix(userID, "anon:") {
 		return true
 	}
 	return false

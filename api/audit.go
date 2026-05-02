@@ -58,12 +58,13 @@ func (h *Handlers) audit(
 
 const (
 	// Auth
-	ActionLogin          = "LOGIN"
-	ActionLogout         = "LOGOUT"
-	ActionRegister       = "REGISTER"
-	ActionTokenRefresh   = "TOKEN_REFRESH"
-	ActionPasswordChange = "PASSWORD_CHANGED"
-	ActionPasswordReset  = "USER_PASSWORD_RESET"
+	ActionLogin           = "LOGIN"
+	ActionLogout          = "LOGOUT"
+	ActionRegister        = "REGISTER"
+	ActionTokenRefresh    = "TOKEN_REFRESH"
+	ActionPasswordChange  = "PASSWORD_CHANGED"
+	ActionPasswordExpired = "PASSWORD_EXPIRED"
+	ActionPasswordReset   = "USER_PASSWORD_RESET"
 
 	// KYC lifecycle
 	ActionKYCCreate     = "KYC_CREATED"
@@ -82,9 +83,10 @@ const (
 	ActionKYCAIScan       = "KYC_AI_SCAN"
 
 	// Certificates
-	ActionCertIssue  = "CERTIFICATE_ISSUED"
-	ActionCertVerify = "CERTIFICATE_VERIFIED"
-	ActionCertList   = "CERTIFICATE_LIST" // GET — who is viewing all certs
+	ActionCertIssue        = "CERTIFICATE_ISSUED"
+	ActionCertVerify       = "CERTIFICATE_VERIFIED"
+	ActionCertList         = "CERTIFICATE_LIST" // GET — who is viewing all certs
+	ActionCertVerifyFailed = "CERTIFICATE_VERIFY_FAILED"
 
 	// Requester keys
 	ActionKeyGenerate = "REQUESTER_KEYPAIR_GENERATED"
@@ -105,9 +107,14 @@ const (
 	ActionUserDelete = "USER_DELETED"
 
 	// Audit / security (meta — watching the watchers)
-	ActionAuditLogRead = "AUDIT_LOG_READ"
-	// ActionSecurityAlertRead   = "SECURITY_ALERT_READ"
+	ActionAuditLogRead        = "AUDIT_LOG_READ"
 	ActionSecurityAlertReview = "SECURITY_ALERT_REVIEWED"
+	ActionSecurityAlertRead   = "SECURITY_ALERT_READ"
+
+	ActionRenewalAlertRead       = "RENEWAL_ALERT_READ"
+	ActionRenewalAlertToggled    = "RENEWAL_ALERT_TOGGLED"
+	ActionRenewalAlertConfigured = "RENEWAL_ALERT_CONFIGURED"
+	ActionRenewalAlertSentManual = "RENEWAL_ALERT_SENT_MANUAL"
 
 	// Password policy / security actions
 	ActionPasswordPolicyRead   = "PASSWORD_POLICY_READ"
@@ -115,6 +122,9 @@ const (
 	ActionPasswordForceAll     = "PASSWORD_FORCE_RESET_ALL"
 	ActionEmergencyLock        = "EMERGENCY_LOCK_ENABLED"
 	ActionEmergencyUnlock      = "EMERGENCY_LOCK_DISABLED"
+
+	ActionLoginBlockedEmergency = "LOGIN_BLOCKED_EMERGENCY_LOCK"
+	ActionLoginFailed           = "LOGIN_FAILED"
 
 	// Key rotation
 	ActionSigningKeyRotate = "SIGNING_KEY_ROTATED"
@@ -125,19 +135,26 @@ const (
 	ActionIntegrationKeyUpsert = "INTEGRATION_KEY_UPSERTED"
 	ActionIntegrationKeyDelete = "INTEGRATION_KEY_DELETED"
 	ActionIntegrationKeysSync  = "INTEGRATION_KEYS_SYNCED"
-	ResourceIntegrationKey     = "INTEGRATION_KEY"
+
+	// Bank account management
+	ActionBankCreate      = "BANK_CREATED"
+	ActionBankRead        = "BANK_READ"
+	ActionBankUpdate      = "BANK_UPDATED"
+	ActionBankDeactivated = "BANK_DEACTIVATED"
 )
 
 // ─── Resource type constants ──────────────────────────────────────────────────
 
 const (
-	ResourceAuth        = "AUTH"
-	ResourceKYC         = "KYC"
-	ResourceCertificate = "KYC_CERTIFICATE"
-	ResourceKey         = "REQUESTER_KEY"
-	ResourceBlockchain  = "BLOCKCHAIN"
-	ResourceUser        = "USER"
-	ResourceAudit       = "AUDIT"
-	ResourceAlert       = "SECURITY_ALERT"
-	ResourceSecurity    = "SECURITY"
+	ResourceAuth           = "AUTH"
+	ResourceKYC            = "KYC"
+	ResourceCertificate    = "KYC_CERTIFICATE"
+	ResourceKey            = "REQUESTER_KEY"
+	ResourceBlockchain     = "BLOCKCHAIN"
+	ResourceUser           = "USER"
+	ResourceAudit          = "AUDIT"
+	ResourceAlert          = "SECURITY_ALERT"
+	ResourceSecurity       = "SECURITY"
+	ResourceBank           = "BANK"
+	ResourceIntegrationKey = "INTEGRATION_KEY"
 )

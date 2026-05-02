@@ -227,7 +227,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 			// Need to check role before rejecting — peek at the user record
 			if u, _ := pgStore.GetUserByUsername(req.Username); u != nil {
 				if u.Role != auth.RoleAdmin {
-					h.audit(r, "LOGIN_BLOCKED_EMERGENCY_LOCK", ResourceAuth, req.Username,
+					h.audit(r, ActionLoginBlockedEmergency, ResourceAuth, req.Username,
 						map[string]interface{}{"username": req.Username})
 					SendError(w, http.StatusServiceUnavailable,
 						"System is in emergency lock. Contact your administrator.")
@@ -240,7 +240,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	response, err := h.authService.Login(&req)
 	if err != nil {
 		// ALSO audit failed logins — important for brute-force detection
-		h.audit(r, "LOGIN_FAILED", ResourceAuth, req.Username, map[string]interface{}{
+		h.audit(r, ActionLoginFailed, ResourceAuth, req.Username, map[string]interface{}{
 			"username": req.Username,
 			"reason":   err.Error(),
 		})
@@ -263,7 +263,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 							log.Printf("[Login] could not persist expiry flag: %v", err)
 						}
 						h.authService.LoadUser(response.User)
-						h.audit(r, "PASSWORD_EXPIRED", ResourceAuth, response.User.ID,
+						h.audit(r, ActionPasswordExpired, ResourceAuth, response.User.ID,
 							map[string]interface{}{
 								"username":          response.User.Username,
 								"days_since_change": int(time.Since(changedAt).Hours() / 24),
@@ -1055,6 +1055,11 @@ func (h *Handlers) GetKYCStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audit log for KYC stats access (sensitive record access)
+	h.audit(r, ActionKYCList, ResourceKYC, "", map[string]interface{}{
+		"action": "KYC_STATS_READ",
+	})
+
 	SendSuccess(w, "", counts)
 }
 
@@ -1206,7 +1211,7 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 	// Update in-memory blockchain map
 	h.blockchain.Banks[req.BankID] = bank
 
-	h.audit(r, "BANK_UPDATED", "BANK", req.BankID, map[string]interface{}{
+	h.audit(r, ActionBankUpdate, ResourceBank, req.BankID, map[string]interface{}{
 		"bank_id": req.BankID,
 		"name":    bank.Name,
 	})
@@ -1237,7 +1242,7 @@ func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 	}
 	h.blockchain.Banks[bankID] = bank
 
-	h.audit(r, "BANK_DEACTIVATED", "BANK", bankID, map[string]interface{}{
+	h.audit(r, ActionBankDeactivated, ResourceBank, bankID, map[string]interface{}{
 		"bank_id": bankID,
 		"name":    bank.Name,
 	})
@@ -1436,6 +1441,13 @@ func (h *Handlers) GetAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get audit logs from storage
+	logs, err := h.storage.GetAuditLogs(userID, action, startTime, endTime, limit)
+	if err != nil {
+		SendInternalError(w, "failed to retrieve audit logs:  "+err.Error())
+		return
+	}
+
 	// Audit log for audit log access (meta-audit)
 	h.audit(r, ActionAuditLogRead, ResourceAudit, "", map[string]interface{}{
 		"filter_user_id": userID,
@@ -1444,13 +1456,6 @@ func (h *Handlers) GetAuditLogs(w http.ResponseWriter, r *http.Request) {
 		"end_date":       endTime.Format("2006-01-02"),
 		"limit":          limit,
 	})
-
-	// Get audit logs from storage
-	logs, err := h.storage.GetAuditLogs(userID, action, startTime, endTime, limit)
-	if err != nil {
-		SendInternalError(w, "failed to retrieve audit logs:  "+err.Error())
-		return
-	}
 
 	SendSuccess(w, "", map[string]interface{}{
 		"logs":       logs,
@@ -1492,6 +1497,11 @@ func (h *Handlers) GetSecurityAlerts(w http.ResponseWriter, r *http.Request) {
 
 	// Get alert counts by risk level
 	alertCounts := h.monitoringService.GetAlertCount()
+
+	// Audit log for security alert access (sensitive security data)
+	h.audit(r, ActionSecurityAlertRead, ResourceSecurity, "", map[string]interface{}{
+		"count": len(alerts),
+	})
 
 	SendSuccess(w, "", map[string]interface{}{
 		"alerts": alerts,
@@ -2298,7 +2308,7 @@ func (h *Handlers) VerifyCertificate(w http.ResponseWriter, r *http.Request) {
 		if err := cert.VerifyWithSigningManager(h.signingKeyMgr); err != nil {
 			// Audit the failed attempt before returning. Tamper attempts are
 			// exactly the events you want in the audit log.
-			h.audit(r, "CERTIFICATE_VERIFY_FAILED", ResourceCertificate, cert.CertificateID,
+			h.audit(r, ActionCertVerifyFailed, ResourceCertificate, cert.CertificateID,
 				map[string]interface{}{
 					"certificate_id": cert.CertificateID,
 					"issuer_key_id":  cert.IssuerKeyID,
@@ -2646,7 +2656,7 @@ func (h *Handlers) GetRenewalAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit: who is reading renewal alerts
-	h.audit(r, "RENEWAL_ALERT_LIST", ResourceAlert, "", map[string]interface{}{
+	h.audit(r, ActionRenewalAlertRead, ResourceAlert, "", map[string]interface{}{
 		"requester_id": requesterID,
 		"count":        len(alerts),
 	})
@@ -2687,7 +2697,7 @@ func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
-		h.audit(r, "RENEWAL_ALERT_TOGGLED", ResourceAlert, req.AlertID, map[string]interface{}{
+		h.audit(r, ActionRenewalAlertToggled, ResourceAlert, req.AlertID, map[string]interface{}{
 			"alert_id":  req.AlertID,
 			"is_active": *req.IsActive,
 		})
@@ -2746,7 +2756,7 @@ func (h *Handlers) ConfigureRenewalAlert(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.audit(r, "RENEWAL_ALERT_CONFIGURED", "RENEWAL_ALERT", req.CertificateID, map[string]interface{}{
+	h.audit(r, ActionRenewalAlertConfigured, ResourceAlert, req.CertificateID, map[string]interface{}{
 		"certificate_id": req.CertificateID,
 		"delivery":       delivery,
 		"send_interval":  sendInterval,
@@ -2870,7 +2880,7 @@ func (h *Handlers) SendRenewalAlert(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[SendRenewalAlert] failed to mark status: %v", markErr)
 	}
 
-	h.audit(r, "RENEWAL_ALERT_SENT_MANUAL", ResourceAlert, target.CertificateID, map[string]interface{}{
+	h.audit(r, ActionRenewalAlertSentManual, ResourceAlert, target.CertificateID, map[string]interface{}{
 		"alert_id":       target.ID,
 		"certificate_id": target.CertificateID,
 		"customer_id":    target.CustomerID,
@@ -4232,7 +4242,7 @@ func (h *Handlers) GetPasswordPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.audit(r, "PASSWORD_POLICY_READ", "SECURITY", "password_policy", nil)
+	h.audit(r, ActionPasswordPolicyRead, ResourceSecurity, "password_policy", nil)
 
 	SendSuccess(w, "", map[string]interface{}{
 		"interval_months":     pol.IntervalMonths,
@@ -4268,7 +4278,7 @@ func (h *Handlers) UpdatePasswordPolicy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.audit(r, "PASSWORD_POLICY_UPDATED", "SECURITY", "password_policy", map[string]interface{}{
+	h.audit(r, ActionPasswordPolicyUpdate, ResourceSecurity, "password_policy", map[string]interface{}{
 		"interval_months": req.IntervalMonths,
 		"actor":           user.Username,
 	})
@@ -4300,7 +4310,7 @@ func (h *Handlers) ForceAllPasswordReset(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.audit(r, "PASSWORD_FORCE_RESET_ALL", "SECURITY", "users", map[string]interface{}{
+	h.audit(r, ActionPasswordForceAll, ResourceSecurity, "users", map[string]interface{}{
 		"affected_count": n,
 		"actor":          user.Username,
 	})
@@ -4351,13 +4361,13 @@ func (h *Handlers) EmergencyLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	action := "EMERGENCY_LOCK_DISABLED"
+	action := ActionEmergencyUnlock
 	msg := "Emergency lock disabled — normal login resumed"
 	if req.Locked {
-		action = "EMERGENCY_LOCK_ENABLED"
+		action = ActionEmergencyLock
 		msg = "Emergency lock enabled — non-admin logins blocked"
 	}
-	h.audit(r, action, "SECURITY", "emergency_lock", map[string]interface{}{
+	h.audit(r, action, ResourceSecurity, "emergency_lock", map[string]interface{}{
 		"reason": req.Reason,
 		"actor":  user.Username,
 	})
@@ -4416,7 +4426,7 @@ func (h *Handlers) RotateSigningKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit(r, "SIGNING_KEY_ROTATED", "SECURITY", newID, map[string]interface{}{
+	h.audit(r, ActionSigningKeyRotate, ResourceSecurity, newID, map[string]interface{}{
 		"algorithm": req.Algorithm,
 		"key_size":  req.KeySize,
 		"actor":     user.Username,
@@ -4496,7 +4506,7 @@ func (h *Handlers) RotateKEK(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[KEK rotate] rewrap complete for KEK %s", newKEKID)
 	}()
 
-	h.audit(r, "KEK_ROTATED", "SECURITY", newKEKID, map[string]interface{}{
+	h.audit(r, ActionKEKRotate, ResourceSecurity, newKEKID, map[string]interface{}{
 		"actor": user.Username,
 	})
 
@@ -4590,7 +4600,7 @@ func (h *Handlers) UpsertIntegrationKey(w http.ResponseWriter, r *http.Request) 
 	if user != nil {
 		actor = user.Username
 	}
-	h.audit(r, "INTEGRATION_KEY_UPSERTED", "INTEGRATION_KEY", key.ID,
+	h.audit(r, ActionIntegrationKeyUpsert, ResourceIntegrationKey, key.ID,
 		map[string]interface{}{"key_name": key.Name, "actor": actor})
 
 	SendSuccess(w, "key saved", map[string]interface{}{"id": key.ID})
@@ -4623,7 +4633,7 @@ func (h *Handlers) SyncIntegrationKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit(r, "INTEGRATION_KEYS_SYNCED", "INTEGRATION_KEY", "",
+	h.audit(r, ActionIntegrationKeysSync, ResourceIntegrationKey, "",
 		map[string]interface{}{"count": len(req.Keys)})
 
 	SendSuccess(w, "sync complete", map[string]interface{}{"synced": len(req.Keys)})
@@ -4695,7 +4705,7 @@ func (h *Handlers) DeleteIntegrationKey(w http.ResponseWriter, r *http.Request) 
 	if user != nil {
 		actor = user.Username
 	}
-	h.audit(r, "INTEGRATION_KEY_DELETED", "INTEGRATION_KEY", keyID,
+	h.audit(r, ActionIntegrationKeyDelete, ResourceIntegrationKey, keyID,
 		map[string]interface{}{"actor": actor})
 
 	SendSuccess(w, "key deleted", map[string]interface{}{"id": keyID})

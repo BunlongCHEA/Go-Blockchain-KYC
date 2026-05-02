@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"Go-Blockchain-KYC/auth"
@@ -49,51 +50,50 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 
 		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapper.statusCode, duration)
 
-		// // Record activity for monitoring
-		// if m.monitoring != nil {
-		// 	// Read userID from the enriched context (set by Authenticate)
-		// 	// For unauthenticated routes r.Context() has no user — use path-based label.
-		// 	userID := "anonymous"
-		// 	if user, ok := GetUserFromContext(r); ok && user != nil {
-		// 		userID = user.ID
-		// 	} else {
-		// 		// For login/register, label by action so it's not just "anonymous"
-		// 		switch {
-		// 		case strings.Contains(r.URL.Path, "/auth/login"):
-		// 			userID = "auth:login"
-		// 		case strings.Contains(r.URL.Path, "/auth/register"):
-		// 			userID = "auth:register"
-		// 		case strings.Contains(r.URL.Path, "/certificate/verify"):
-		// 			userID = "public:verify"
-		// 		case r.URL.Path == "/health":
-		// 			return // ← skip health check entirely from audit
-		// 		}
-		// 	}
+		if r.URL.Path == "/health" || r.URL.Path == "/" {
+			return
+		}
+		if m.monitoring == nil {
+			return
+		}
 
-		// 	// Skip health check noise entirely
-		// 	if r.URL.Path == "/health" || r.URL.Path == "/" {
-		// 		return
-		// 	}
+		// Record activity for monitoring
+		// Read userID from the enriched context (set by Authenticate)
+		// For unauthenticated routes r.Context() has no user — use path-based label.
+		userID := "anonymous"
+		if user, ok := GetUserFromContext(r); ok && user != nil {
+			userID = user.ID
+		} else {
+			switch {
+			case strings.Contains(r.URL.Path, "/auth/login"):
+				userID = "auth:login"
+			case strings.Contains(r.URL.Path, "/auth/register"):
+				userID = "auth:register"
+			case strings.Contains(r.URL.Path, "/certificate/verify"):
+				userID = "public:verify"
+			case strings.Contains(r.URL.Path, "/banks/list"):
+				userID = "public:banks_list"
+			case strings.Contains(r.URL.Path, "/health"):
+				userID = "public:health_check"
+			}
+		}
 
-		// 	activity := monitoring.UserActivity{
-		// 		UserID:     userID,
-		// 		Action:     r.Method + " " + r.URL.Path,
-		// 		Resource:   getResourceType(r.URL.Path),
-		// 		ResourceID: r.URL.Query().Get("customer_id"),
-		// 		IPAddress:  getClientIP(r),
-		// 		UserAgent:  r.UserAgent(),
-		// 		Timestamp:  time.Now(),
-		// 		Success:    wrapper.statusCode < 400,
-		// 		Details: map[string]interface{}{
-		// 			"method":      r.Method,
-		// 			"path":        r.URL.Path,
-		// 			"status_code": wrapper.statusCode,
-		// 			"duration_ms": duration.Milliseconds(),
-		// 		},
-		// 	}
-
-		// 	m.monitoring.RecordActivity(activity)
-		// }
+		m.monitoring.RecordActivity(monitoring.UserActivity{
+			UserID:     userID,
+			Action:     r.Method + " " + r.URL.Path,
+			Resource:   getResourceType(r.URL.Path),
+			ResourceID: r.URL.Query().Get("customer_id"),
+			IPAddress:  getClientIP(r),
+			UserAgent:  r.UserAgent(),
+			Timestamp:  time.Now(),
+			Success:    wrapper.statusCode < 400,
+			Details: map[string]interface{}{
+				"method":      r.Method,
+				"path":        r.URL.Path,
+				"status_code": wrapper.statusCode,
+				"duration_ms": duration.Milliseconds(),
+			},
+		})
 	})
 }
 
@@ -128,19 +128,21 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			m.recordFailedAuth(r, "missing authorization header")
 			SendUnauthorized(w, "missing authorization header")
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
+			m.recordFailedAuth(r, "invalid authorization header format")
 			SendUnauthorized(w, "invalid authorization header format")
 			return
 		}
 
-		token := parts[1]
-		user, claims, err := m.authService.ValidateToken(token)
+		user, claims, err := m.authService.ValidateToken(parts[1])
 		if err != nil {
+			m.recordFailedAuth(r, "invalid or expired token")
 			SendUnauthorized(w, "invalid or expired token")
 			return
 		}
@@ -150,6 +152,28 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ClaimsContextKey, claims)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// recordFailedAuth sends a failed-login event to monitoring so
+// AnomalyMultipleFailedAuth can trigger after N failures from the same IP.
+func (m *Middleware) recordFailedAuth(r *http.Request, reason string) {
+	if m.monitoring == nil {
+		return
+	}
+	// Key by IP so attempts from unauthenticated callers still accumulate.
+	// Use "anon:<ip>" so isSystemUser() doesn't suppress it AND it's
+	// still distinguishable from real user IDs.
+	ip := getClientIP(r)
+	m.monitoring.RecordActivity(monitoring.UserActivity{
+		UserID:    "anon:" + ip,
+		Action:    "LOGIN_FAILED", // triggers FailedAuthCount++ in monitoring
+		Resource:  "AUTH",
+		IPAddress: ip,
+		UserAgent: r.UserAgent(),
+		Timestamp: time.Now(),
+		Success:   false,
+		Details:   map[string]interface{}{"reason": reason, "path": r.URL.Path},
 	})
 }
 
@@ -209,15 +233,19 @@ func (m *Middleware) RateLimit(requestsPerMinute int) func(http.Handler) http.Ha
 		lastSeen time.Time
 	}
 
+	var mu sync.Mutex // sync.Mutex (currently has a data race)
 	clients := make(map[string]*client)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
+			// ip := r.RemoteAddr
+			ip := getClientIP(r) // was r.RemoteAddr (includes port, wrong key)
 
+			mu.Lock()
 			c, exists := clients[ip]
 			if !exists {
 				clients[ip] = &client{count: 1, lastSeen: time.Now()}
+				mu.Unlock()
 			} else {
 				if time.Since(c.lastSeen) > time.Minute {
 					c.count = 1
@@ -226,7 +254,9 @@ func (m *Middleware) RateLimit(requestsPerMinute int) func(http.Handler) http.Ha
 					c.count++
 				}
 
-				if c.count > requestsPerMinute {
+				over := c.count > requestsPerMinute
+				mu.Unlock()
+				if over {
 					SendError(w, http.StatusTooManyRequests, "rate limit exceeded")
 					return
 				}
@@ -251,19 +281,26 @@ func GetClaimsFromContext(r *http.Request) (*auth.Claims, bool) {
 
 // getResourceType extracts resource type from path
 func getResourceType(path string) string {
-	if strings.Contains(path, "/kyc") {
+	switch {
+	case strings.Contains(path, "/kyc"):
 		return "KYC"
-	}
-	if strings.Contains(path, "/bank") {
+	case strings.Contains(path, "/certificate"):
+		return "CERTIFICATE"
+	case strings.Contains(path, "/bank"):
 		return "BANK"
-	}
-	if strings.Contains(path, "/blockchain") {
+	case strings.Contains(path, "/blockchain"):
 		return "BLOCKCHAIN"
-	}
-	if strings.Contains(path, "/auth") {
+	case strings.Contains(path, "/auth"):
 		return "AUTH"
+	case strings.Contains(path, "/users"):
+		return "USER"
+	case strings.Contains(path, "/security"):
+		return "SECURITY"
+	case strings.Contains(path, "/audit"):
+		return "AUDIT"
+	default:
+		return "OTHER"
 	}
-	return "OTHER"
 }
 
 // getClientIP extracts client IP from request

@@ -102,7 +102,25 @@ func main() {
 	// Initialize monitoring service
 	log.Println("\n8. Initializing Monitoring Service...")
 	monitoringConfig := monitoring.DefaultMonitoringConfig()
-	monitoringService := monitoring.NewMonitoringService(store, monitoringConfig)
+	// monitoringService := monitoring.NewMonitoringService(store, monitoringConfig)
+
+	// ── combinedBlocker wires Postgres + in-memory auth together
+	// When autoBlockUser fires (CRITICAL anomaly), it must:
+	//   1. Set is_active=FALSE in Postgres  (survives restart)
+	//   2. Set IsActive=false in AuthService memory (takes effect immediately)
+	// Without step 2, the blocked user's JWT still passes ValidateToken
+	// until the token naturally expires (up to 1 hour gap).
+	var monitoringService *monitoring.MonitoringService
+	if pgStorage, ok := store.(*storage.PostgresStorage); ok {
+		blocker := &combinedBlocker{pg: pgStorage, auth: authService}
+		monitoringService = monitoring.NewMonitoringService(blocker, monitoringConfig)
+		log.Println("   ✓ Monitoring wired with combinedBlocker (DB + in-memory sync)")
+	} else {
+		// store is nil (no DB) — monitoring still works, auto-block skips DB write
+		monitoringService = monitoring.NewMonitoringService(store, monitoringConfig)
+		log.Println("   ⚠ Monitoring using store directly (no DB available)")
+	}
+
 	monitoringService.Start()
 	monitoring.StartMetricsServer(cfg.Monitoring.MetricsPort) // start Prometheus metrics on :9090
 
@@ -633,6 +651,32 @@ func reloadUsersFromDB(store storage.Storage, authService *auth.AuthService) err
 	}
 	log.Printf("   ✓ %d user(s) reloaded from database", len(users))
 	return nil
+}
+
+// combinedBlocker implements monitoring.StorageInterface.BlockUser
+// by writing to Postgres AND immediately deactivating the in-memory auth user.
+// This closes the gap where autoBlockUser only updated the DB, leaving the
+// in-memory JWT validation unaware of the block.
+type combinedBlocker struct {
+	pg   *storage.PostgresStorage
+	auth *auth.AuthService
+}
+
+func (b *combinedBlocker) BlockUser(userID, reason string) error {
+	// 1. Persist block to Postgres (is_active = FALSE)
+	if err := b.pg.BlockUser(userID, reason); err != nil {
+		return err
+	}
+	// 2. Deactivate in AuthService memory — takes effect on NEXT request immediately.
+	// Ignore "user not found" — user may not be loaded in memory yet (rare edge case).
+	if err := b.auth.DeactivateUser(userID); err != nil {
+		log.Printf("   [combinedBlocker] in-memory deactivate skipped for %s: %v", userID, err)
+	}
+	return nil
+}
+
+func (b *combinedBlocker) SaveAuditLog(l *models.AuditLog) error {
+	return b.pg.SaveAuditLog(l)
 }
 
 // handleGracefulShutdown handles graceful shutdown on SIGINT/SIGTERM
