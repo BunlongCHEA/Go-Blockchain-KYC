@@ -18,6 +18,7 @@ type ContextKey string
 const (
 	UserContextKey   ContextKey = "user"
 	ClaimsContextKey ContextKey = "claims"
+	TrackedUserIDKey ContextKey = "tracked_user_id" // for monitoring: tracks which user is being acted on, even if the caller is an admin
 )
 
 // Middleware holds dependencies for middleware functions
@@ -44,10 +45,18 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 		// Create a response writer wrapper to capture status code
 		wrapper := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
+		// ── Inject a mutable *string pointer into context
+		// Authenticate (deeper in the chain) will write the real user.ID into
+		// this pointer. When next.ServeHTTP returns, we read it here.
+		// This is necessary because r.WithContext() inside Authenticate creates
+		// a NEW request — the original `r` here never sees those changes.
+		userIDPtr := new(string)
+		*userIDPtr = "anonymous" // default — overwritten by Authenticate if token valid
+		r = r.WithContext(context.WithValue(r.Context(), TrackedUserIDKey, userIDPtr))
+
 		next.ServeHTTP(wrapper, r)
 
 		duration := time.Since(start)
-
 		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapper.statusCode, duration)
 
 		if r.URL.Path == "/health" || r.URL.Path == "/" {
@@ -57,13 +66,10 @@ func (m *Middleware) Logging(next http.Handler) http.Handler {
 			return
 		}
 
-		// Record activity for monitoring
-		// Read userID from the enriched context (set by Authenticate)
-		// For unauthenticated routes r.Context() has no user — use path-based label.
-		userID := "anonymous"
-		if user, ok := GetUserFromContext(r); ok && user != nil {
-			userID = user.ID
-		} else {
+		// ── Record activity for monitoring
+		// Read the real userID — Authenticate has written it by now
+		userID := *userIDPtr
+		if userID == "anonymous" {
 			switch {
 			case strings.Contains(r.URL.Path, "/auth/login"):
 				userID = "auth:login"
@@ -145,6 +151,14 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			m.recordFailedAuth(r, "invalid or expired token")
 			SendUnauthorized(w, "invalid or expired token")
 			return
+		}
+
+		// ── Write real userID back to the shared pointer
+		// Logging middleware injected this pointer before the chain ran.
+		// Writing here makes it visible to Logging after next.ServeHTTP returns
+		// even though r.WithContext() below creates a new request copy.
+		if ptr, ok := r.Context().Value(TrackedUserIDKey).(*string); ok {
+			*ptr = user.ID
 		}
 
 		// Add user and claims to context

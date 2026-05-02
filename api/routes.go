@@ -316,9 +316,6 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			http.HandlerFunc(handlers.GetMyCertificates)))
 
-	// Apply global middleware
-	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
-
 	// ==================== Emergency Security
 
 	mux.Handle("GET /api/v1/auth/password-policy",
@@ -403,6 +400,9 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.DeleteIntegrationKey))))
+
+	// Apply global middleware
+	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
 
 	return handler
 }
