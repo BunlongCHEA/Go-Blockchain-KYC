@@ -1058,6 +1058,54 @@ func (p *PostgresStorage) GetAuditLogsByUser(userID string, limit int) ([]*model
 	return p.GetAuditLogs(userID, "", time.Now().AddDate(0, 0, -30), time.Now(), limit)
 }
 
+// GetHighSecurityAuditLogs returns audit_log rows where security_level <= maxLevel,
+// ordered by created_at DESC.  maxLevel: 0=Critical only, 1=+High, 2=+Medium.
+// days limits the lookback window; limit caps row count.
+func (p *PostgresStorage) GetHighSecurityAuditLogs(maxLevel int, days int, limit int) ([]*models.AuditLog, error) {
+	since := time.Now().AddDate(0, 0, -days)
+	query := `
+		SELECT id, user_id, action, resource_type, resource_id,
+		       details, ip_address, user_agent, created_at, security_level
+		FROM   audit_log
+		WHERE  security_level IS NOT NULL
+		AND    security_level <= $1
+		AND    created_at >= $2
+		ORDER  BY created_at DESC
+		LIMIT  $3
+	`
+
+	rows, err := p.db.Query(query, maxLevel, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("GetHighSecurityAuditLogs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*models.AuditLog
+	for rows.Next() {
+		al := &models.AuditLog{}
+		var details []byte
+		var secLevel sql.NullInt64
+
+		if err := rows.Scan(
+			&al.ID, &al.UserID, &al.Action,
+			&al.ResourceType, &al.ResourceID,
+			&details, &al.IPAddress, &al.UserAgent,
+			&al.CreatedAt, &secLevel,
+		); err != nil {
+			return nil, fmt.Errorf("GetHighSecurityAuditLogs scan: %w", err)
+		}
+		if details != nil {
+			json.Unmarshal(details, &al.Details)
+		}
+		if secLevel.Valid {
+			v := int(secLevel.Int64)
+			al.SecurityLevel = &v
+		}
+		logs = append(logs, al)
+	}
+	return logs, nil
+}
+
 // ==================== User Operations ====================
 
 // BlockUser blocks a user account

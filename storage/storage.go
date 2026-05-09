@@ -45,6 +45,7 @@ type Storage interface {
 	// Audit Log operations
 	SaveAuditLog(log *models.AuditLog) error
 	GetAuditLogs(userID, action string, startTime, endTime time.Time, limit int) ([]*models.AuditLog, error)
+	GetHighSecurityAuditLogs(maxLevel int, days int, limit int) ([]*models.AuditLog, error)
 
 	// User operations
 	BlockUser(userID, reason string) error

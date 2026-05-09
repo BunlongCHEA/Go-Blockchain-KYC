@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1471,19 +1472,16 @@ func (h *Handlers) GetAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 // GetSecurityAlerts returns security alerts from monitoring service
 func (h *Handlers) GetSecurityAlerts(w http.ResponseWriter, r *http.Request) {
-	if h.monitoringService == nil {
-		SendError(w, http.StatusServiceUnavailable, "monitoring service not available")
-		return
-	}
 
-	// Parse query parameters
+	// ── Parse params ──────────────────────────────────────────────────────────
 	userID := r.URL.Query().Get("user_id")
 	riskLevelStr := r.URL.Query().Get("risk_level")
 	reviewedStr := r.URL.Query().Get("reviewed")
 
-	var riskLevel monitoring.RiskLevel
-	if riskLevelStr != "" {
-		riskLevel = monitoring.RiskLevel(riskLevelStr)
+	daysStr := r.URL.Query().Get("days")
+	days := 30
+	if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+		days = d
 	}
 
 	var reviewed *bool
@@ -1492,31 +1490,161 @@ func (h *Handlers) GetSecurityAlerts(w http.ResponseWriter, r *http.Request) {
 		reviewed = &rev
 	}
 
-	// Get alerts from monitoring service
-	alerts := h.monitoringService.GetAlerts(userID, riskLevel, reviewed)
+	// ── Helper: security_level → RiskLevel string ─────────────────────────────
+	secLevelToRisk := func(lvl int) string {
+		switch lvl {
+		case 0:
+			return "CRITICAL"
+		case 1:
+			return "HIGH"
+		case 2:
+			return "MEDIUM"
+		default:
+			return "LOW"
+		}
+	}
 
-	// Get alert counts by risk level
-	alertCounts := h.monitoringService.GetAlertCount()
+	// ── Unified alert shape ────────────────────────────────────────────────────
+	type AlertItem struct {
+		ID            string                 `json:"id"`
+		UserID        string                 `json:"user_id"`
+		Action        string                 `json:"action"`
+		RiskLevel     string                 `json:"risk_level"`
+		SecurityLevel int                    `json:"security_level"`
+		Description   string                 `json:"description,omitempty"`
+		IsReviewed    bool                   `json:"is_reviewed"`
+		ReviewedBy    string                 `json:"reviewed_by,omitempty"`
+		ReviewedAt    *time.Time             `json:"reviewed_at,omitempty"`
+		ActionTaken   string                 `json:"action_taken,omitempty"`
+		CreatedAt     time.Time              `json:"created_at"`
+		IPAddress     string                 `json:"ip_address,omitempty"`
+		Details       map[string]interface{} `json:"details,omitempty"`
+		Source        string                 `json:"source"` // "monitoring" | "audit_log"
+	}
 
-	// Audit log for security alert access (sensitive security data)
+	alerts := make([]*AlertItem, 0)
+	seenIDs := map[string]bool{}
+
+	// ── 1. In-memory monitoring alerts ────────────────────────────────────────
+	if h.monitoringService != nil {
+		var monRisk monitoring.RiskLevel
+		if riskLevelStr != "" {
+			monRisk = monitoring.RiskLevel(riskLevelStr)
+		}
+		for _, a := range h.monitoringService.GetAlerts(userID, monRisk, reviewed) {
+			// Only include Critical/High/Medium from monitoring (Low is too noisy)
+			if a.SecurityLevel > 2 {
+				continue
+			}
+			item := &AlertItem{
+				ID:            a.ID,
+				UserID:        a.UserID,
+				Action:        string(a.Type), // e.g. "MULTIPLE_FAILED_AUTH"
+				RiskLevel:     string(a.RiskLevel),
+				SecurityLevel: a.SecurityLevel,
+				Description:   a.Description,
+				IsReviewed:    a.IsReviewed,
+				ReviewedBy:    a.ReviewedBy,
+				ReviewedAt:    a.ReviewedAt,
+				ActionTaken:   a.ActionTaken,
+				CreatedAt:     a.Timestamp,
+				IPAddress:     a.IPAddress,
+				Details:       a.Details,
+				Source:        "monitoring",
+			}
+			alerts = append(alerts, item)
+			seenIDs[item.ID] = true
+		}
+	}
+
+	// ── 2. Persistent audit_log rows (Critical/High/Medium = level 0-2) ───────
+	if h.storage != nil {
+		auditLogs, err := h.storage.GetHighSecurityAuditLogs(2, days, 200)
+		if err != nil {
+			log.Printf("[GetSecurityAlerts] audit_log query failed: %v", err)
+		} else {
+			for _, al := range auditLogs {
+				// Dedup: ANOMALY_DETECTED rows are already in m.alerts above
+				// (they share the same alert ID stored as ResourceID)
+				if seenIDs[al.ResourceID] {
+					continue
+				}
+				// User filter
+				if userID != "" && al.UserID != userID {
+					continue
+				}
+				lvl := 3
+				if al.SecurityLevel != nil {
+					lvl = *al.SecurityLevel
+				}
+				// Risk level filter (if caller specifies a specific level)
+				rl := secLevelToRisk(lvl)
+				if riskLevelStr != "" && rl != riskLevelStr {
+					continue
+				}
+				// reviewed filter — audit_log rows have no reviewed state; default false
+				if reviewed != nil && *reviewed != false {
+					continue // audit_log entries are never "reviewed" in the old sense
+				}
+
+				id := fmt.Sprintf("AULOG_%d", al.ID)
+				if seenIDs[id] {
+					continue
+				}
+				seenIDs[id] = true
+
+				item := &AlertItem{
+					ID:            id,
+					UserID:        al.UserID,
+					Action:        al.Action,
+					RiskLevel:     rl,
+					SecurityLevel: lvl,
+					IsReviewed:    false,
+					CreatedAt:     al.CreatedAt,
+					IPAddress:     al.IPAddress,
+					Details:       al.Details,
+					Source:        "audit_log",
+				}
+				alerts = append(alerts, item)
+			}
+		}
+	}
+
+	// ── Sort merged list: newest first ────────────────────────────────────────
+	sort.Slice(alerts, func(i, j int) bool {
+		return alerts[i].CreatedAt.After(alerts[j].CreatedAt)
+	})
+
+	// ── Summary counts ────────────────────────────────────────────────────────
+	summary := map[string]int{
+		"total": len(alerts), "critical": 0, "high": 0, "medium": 0, "low": 0,
+	}
+	for _, a := range alerts {
+		switch a.RiskLevel {
+		case "CRITICAL":
+			summary["critical"]++
+		case "HIGH":
+			summary["high"]++
+		case "MEDIUM":
+			summary["medium"]++
+		default:
+			summary["low"]++
+		}
+	}
+
 	h.audit(r, ActionSecurityAlertRead, ResourceSecurity, "", map[string]interface{}{
 		"count": len(alerts),
 	})
 
 	SendSuccess(w, "", map[string]interface{}{
-		"alerts": alerts,
-		"count":  len(alerts),
-		"summary": map[string]interface{}{
-			"total":    len(alerts),
-			"low":      alertCounts[monitoring.RiskLow],
-			"medium":   alertCounts[monitoring.RiskMedium],
-			"high":     alertCounts[monitoring.RiskHigh],
-			"critical": alertCounts[monitoring.RiskCritical],
-		},
+		"alerts":  alerts,
+		"count":   len(alerts),
+		"summary": summary,
 		"filters": map[string]interface{}{
 			"user_id":    userID,
 			"risk_level": riskLevelStr,
 			"reviewed":   reviewedStr,
+			"days":       days,
 		},
 	})
 }
