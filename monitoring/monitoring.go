@@ -39,18 +39,19 @@ const (
 
 // AnomalyAlert represents a detected anomaly
 type AnomalyAlert struct {
-	ID          string                 `json:"id"`
-	UserID      string                 `json:"user_id"`
-	Type        AnomalyType            `json:"type"`
-	RiskLevel   RiskLevel              `json:"risk_level"`
-	Description string                 `json:"description"`
-	Details     map[string]interface{} `json:"details"`
-	IPAddress   string                 `json:"ip_address"`
-	Timestamp   time.Time              `json:"timestamp"`
-	IsReviewed  bool                   `json:"is_reviewed"`
-	ReviewedBy  string                 `json:"reviewed_by"`
-	ReviewedAt  *time.Time             `json:"reviewed_at"`
-	ActionTaken string                 `json:"action_taken"`
+	ID            string                 `json:"id"`
+	UserID        string                 `json:"user_id"`
+	Type          AnomalyType            `json:"type"`
+	RiskLevel     RiskLevel              `json:"risk_level"`
+	SecurityLevel int                    `json:"security_level"` // 0=Critical 1=High 2=Medium 3=Low
+	Description   string                 `json:"description"`
+	Details       map[string]interface{} `json:"details"`
+	IPAddress     string                 `json:"ip_address"`
+	Timestamp     time.Time              `json:"timestamp"`
+	IsReviewed    bool                   `json:"is_reviewed"`
+	ReviewedBy    string                 `json:"reviewed_by"`
+	ReviewedAt    *time.Time             `json:"reviewed_at"`
+	ActionTaken   string                 `json:"action_taken"`
 }
 
 // UserActivity represents user activity for monitoring
@@ -382,16 +383,27 @@ func (m *MonitoringService) calculateSuspiciousScore(stats *UserActivityStats) f
 
 // createAlert creates a new anomaly alert
 func (m *MonitoringService) createAlert(activity UserActivity, anomalyType AnomalyType, riskLevel RiskLevel, description string, details map[string]interface{}) {
+
+	// Map RiskLevel → security_status id (consistent with utils.ActionSecurityLevel)
+	riskToSecLevel := map[RiskLevel]int{
+		RiskCritical: 0,
+		RiskHigh:     1,
+		RiskMedium:   2,
+		RiskLow:      3,
+	}
+	secLevel := riskToSecLevel[riskLevel] // defaults to 0 (Critical) if unknown
+
 	alert := &AnomalyAlert{
-		ID:          m.generateAlertID(),
-		UserID:      activity.UserID,
-		Type:        anomalyType,
-		RiskLevel:   riskLevel,
-		Description: description,
-		Details:     details,
-		IPAddress:   activity.IPAddress,
-		Timestamp:   time.Now(),
-		IsReviewed:  false,
+		ID:            m.generateAlertID(),
+		UserID:        activity.UserID,
+		Type:          anomalyType,
+		RiskLevel:     riskLevel,
+		SecurityLevel: secLevel,
+		Description:   description,
+		Details:       details,
+		IPAddress:     activity.IPAddress,
+		Timestamp:     time.Now(),
+		IsReviewed:    false,
 	}
 
 	m.alerts = append(m.alerts, alert)
