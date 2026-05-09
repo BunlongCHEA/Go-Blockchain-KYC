@@ -974,8 +974,8 @@ func (p *PostgresStorage) SaveAuditLog(auditLog *models.AuditLog) error {
 	details, _ := json.Marshal(auditLog.Details)
 
 	query := `
-		INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at, security_level)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	_, err := p.db.Exec(query,
@@ -987,6 +987,7 @@ func (p *PostgresStorage) SaveAuditLog(auditLog *models.AuditLog) error {
 		auditLog.IPAddress,
 		auditLog.UserAgent,
 		auditLog.CreatedAt,
+		auditLog.SecurityLevel,
 	)
 
 	if err != nil {

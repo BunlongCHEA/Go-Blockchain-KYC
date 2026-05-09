@@ -121,6 +121,7 @@ var Migrations = []string{
 		resource_type VARCHAR(50) NOT NULL,
 		resource_id VARCHAR(100),
 		details JSONB,
+		security_level SMALLINT,
 		ip_address VARCHAR(45),
 		user_agent TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -263,6 +264,23 @@ var Migrations = []string{
 		scope_counts_today  JSONB         NOT NULL DEFAULT '{}'
 	)`,
 
+	//   0 = Critical  |  1 = High  |  2 = Medium  |  3-4 = Low
+	`CREATE TABLE IF NOT EXISTS security_status (
+		id          SMALLINT    PRIMARY KEY,
+		level       VARCHAR(20) NOT NULL,
+		label       VARCHAR(50) NOT NULL,
+		color       VARCHAR(30) NOT NULL
+	)`,
+
+	// Seed the four levels (idempotent)
+	`INSERT INTO security_status (id, level, label, color)
+	VALUES
+	(0, 'Critical', 'Critical Severity', 'red'),
+	(1, 'High',     'High Severity',     'orange'),
+	(2, 'Medium',   'Medium Severity',   'amber'),
+	(3, 'Low',      'Low Severity',      'blue')
+	ON CONFLICT (id) DO NOTHING`,
+
 	// Seed default (3 months) — only if no row exists yet.
 	`INSERT INTO password_policy (id, interval_months)
 	 VALUES (1, 3)
@@ -280,6 +298,7 @@ var Migrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_log_security_level ON audit_log(security_level)`,
 
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_status ON renewal_alerts(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_renewal_alerts_alert_date ON renewal_alerts(alert_date)`,
