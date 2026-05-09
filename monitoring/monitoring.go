@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Go-Blockchain-KYC/models"
+	"Go-Blockchain-KYC/utils"
 )
 
 // ==================== Types ====================
@@ -199,52 +200,6 @@ func (m *MonitoringService) RecordActivity(activity UserActivity) {
 	m.detectAnomalies(activity, stats)
 }
 
-// actionSecurityLevel returns the security_status id for a given action string.
-// Mirrors NextJS audit/page.tsx ACTION_CFG.priority exactly:
-//
-//	priority 0 → Critical(0), 1 → High(1), 2 → Medium(2), 3-4 → Low(3)
-func actionSecurityLevel(action string) *int {
-	priority := map[string]int{
-		"LOGIN_FAILED":                0,
-		"KYC_DELETED":                 0,
-		"REQUESTER_KEY_REVOKED":       0,
-		"ANOMALY_DETECTED":            0,
-		"USER_DELETED":                0,
-		"LOGIN":                       1,
-		"REGISTER":                    1,
-		"PASSWORD_CHANGED":            1,
-		"USER_PASSWORD_RESET":         1,
-		"KYC_VERIFIED":                1,
-		"KYC_REJECTED":                1,
-		"KYC_PERIODIC_REVIEW":         1,
-		"CERTIFICATE_ISSUED":          1,
-		"REQUESTER_KEYPAIR_GENERATED": 1,
-		"SECURITY_ALERT_REVIEWED":     1,
-		"USER_CREATED":                1,
-		"KYC_CREATED":                 2,
-		"KYC_AI_SCAN":                 2,
-		"CERTIFICATE_VERIFIED":        2,
-		"BLOCK_MINED":                 2,
-		"USER_UPDATED":                2,
-		"LOGOUT":                      3,
-		"KYC_READ":                    3,
-		"KYC_LIST":                    4,
-		"CERTIFICATE_LIST":            4,
-		"REQUESTER_KEY_READ":          4,
-		"AUDIT_LOG_READ":              4,
-	}
-	p, ok := priority[action]
-	if !ok {
-		p = 3 // default → Low
-	}
-	// Clamp 3-4 → 3 (all map to "Low" in security_status)
-	if p > 3 {
-		p = 3
-	}
-	level := p
-	return &level
-}
-
 // recordAuditLog saves activity to audit_log table
 func (m *MonitoringService) recordAuditLog(activity UserActivity) {
 	if m.storage == nil {
@@ -260,7 +215,7 @@ func (m *MonitoringService) recordAuditLog(activity UserActivity) {
 		IPAddress:     activity.IPAddress,
 		UserAgent:     activity.UserAgent,
 		CreatedAt:     activity.Timestamp,
-		SecurityLevel: actionSecurityLevel(activity.Action),
+		SecurityLevel: utils.ActionSecurityLevel(activity.Action),
 	}
 
 	if err := m.storage.SaveAuditLog(auditLog); err != nil {

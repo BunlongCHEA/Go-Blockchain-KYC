@@ -1000,7 +1000,7 @@ func (p *PostgresStorage) SaveAuditLog(auditLog *models.AuditLog) error {
 // GetAuditLogs retrieves audit logs with filters
 func (p *PostgresStorage) GetAuditLogs(userID, action string, startTime, endTime time.Time, limit int) ([]*models.AuditLog, error) {
 	query := `
-		SELECT id, user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at
+		SELECT id, user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at, security_level
 		FROM audit_log
 		WHERE ($1 = '' OR user_id = $1)
 		AND ($2 = '' OR action = $2)
@@ -1020,6 +1020,7 @@ func (p *PostgresStorage) GetAuditLogs(userID, action string, startTime, endTime
 	for rows.Next() {
 		auditLog := &models.AuditLog{}
 		var details []byte
+		var secLevel sql.NullInt64 // nullable SMALLINT
 
 		err := rows.Scan(
 			&auditLog.ID,
@@ -1031,6 +1032,7 @@ func (p *PostgresStorage) GetAuditLogs(userID, action string, startTime, endTime
 			&auditLog.IPAddress,
 			&auditLog.UserAgent,
 			&auditLog.CreatedAt,
+			&secLevel,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan audit log: %w", err)
@@ -1038,6 +1040,11 @@ func (p *PostgresStorage) GetAuditLogs(userID, action string, startTime, endTime
 
 		if details != nil {
 			json.Unmarshal(details, &auditLog.Details)
+		}
+
+		if secLevel.Valid { // only set when not NULL (legacy rows)
+			v := int(secLevel.Int64)
+			auditLog.SecurityLevel = &v
 		}
 
 		logs = append(logs, auditLog)
@@ -1059,14 +1066,16 @@ func (p *PostgresStorage) BlockUser(userID, reason string) error {
 	_, err := p.db.Exec(query, userID)
 
 	if err == nil {
+		lvl := 0 // Critical
 		// Log the block action
 		p.SaveAuditLog(&models.AuditLog{
-			UserID:       "SYSTEM",
-			Action:       "USER_BLOCKED",
-			ResourceType: "USER",
-			ResourceID:   userID,
-			Details:      map[string]interface{}{"reason": reason},
-			CreatedAt:    time.Now(),
+			UserID:        "SYSTEM",
+			Action:        "USER_BLOCKED",
+			ResourceType:  "USER",
+			ResourceID:    userID,
+			Details:       map[string]interface{}{"reason": reason},
+			CreatedAt:     time.Now(),
+			SecurityLevel: &lvl,
 		})
 	}
 
@@ -1079,13 +1088,15 @@ func (p *PostgresStorage) UnblockUser(userID string) error {
 	_, err := p.db.Exec(query, userID)
 
 	if err == nil {
+		lvl := 1 // High
 		p.SaveAuditLog(&models.AuditLog{
-			UserID:       "SYSTEM",
-			Action:       "USER_UNBLOCKED",
-			ResourceType: "USER",
-			ResourceID:   userID,
-			Details:      map[string]interface{}{},
-			CreatedAt:    time.Now(),
+			UserID:        "SYSTEM",
+			Action:        "USER_UNBLOCKED",
+			ResourceType:  "USER",
+			ResourceID:    userID,
+			Details:       map[string]interface{}{},
+			CreatedAt:     time.Now(),
+			SecurityLevel: &lvl,
 		})
 	}
 

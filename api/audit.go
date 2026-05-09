@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"Go-Blockchain-KYC/models"
+	"Go-Blockchain-KYC/utils"
 )
 
 // audit is the single entry-point for all audit log writes.
@@ -38,13 +39,14 @@ func (h *Handlers) audit(
 	}
 
 	entry := &models.AuditLog{
-		UserID:       userID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		Details:      details,
-		IPAddress:    ip,
-		CreatedAt:    time.Now(),
+		UserID:        userID,
+		Action:        action,
+		ResourceType:  resourceType,
+		ResourceID:    resourceID,
+		Details:       details,
+		IPAddress:     ip,
+		CreatedAt:     time.Now(),
+		SecurityLevel: utils.ActionSecurityLevel(action),
 	}
 
 	// Fire-and-forget — never blocks the response path
