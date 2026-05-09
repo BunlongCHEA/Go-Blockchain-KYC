@@ -1108,26 +1108,49 @@ func (p *PostgresStorage) GetHighSecurityAuditLogs(maxLevel int, days int, limit
 
 // ==================== User Operations ====================
 
+// IsAdminUser returns true if the user has role = 'admin'.
+// Used by monitoring to skip auto-block for admin accounts.
+func (p *PostgresStorage) IsAdminUser(userID string) (bool, error) {
+	var role string
+	err := p.db.QueryRow(
+		`SELECT role FROM users WHERE id = $1 AND is_deleted = FALSE`,
+		userID,
+	).Scan(&role)
+	if err == sql.ErrNoRows {
+		return false, nil // unknown user → not admin, proceed normally
+	}
+	if err != nil {
+		return false, err
+	}
+	return role == "admin", nil
+}
+
 // BlockUser blocks a user account
 func (p *PostgresStorage) BlockUser(userID, reason string) error {
-	query := `UPDATE users SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
-	_, err := p.db.Exec(query, userID)
-
-	if err == nil {
-		lvl := 0 // Critical
-		// Log the block action
-		p.SaveAuditLog(&models.AuditLog{
-			UserID:        "SYSTEM",
-			Action:        "USER_BLOCKED",
-			ResourceType:  "USER",
-			ResourceID:    userID,
-			Details:       map[string]interface{}{"reason": reason},
-			CreatedAt:     time.Now(),
-			SecurityLevel: &lvl,
-		})
+	query := `UPDATE users SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND role != 'admin'`
+	result, err := p.db.Exec(query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to block user: %w", err)
 	}
 
-	return err
+	// Warn if the row was not updated (e.g. because the user is admin)
+	if n, _ := result.RowsAffected(); n == 0 {
+		log.Printf("BlockUser: no rows updated for %s (user may be admin or not found)", userID)
+		return nil // not an error — just a no-op
+	}
+
+	lvl := 0 // Critical
+	p.SaveAuditLog(&models.AuditLog{
+		UserID:        "SYSTEM",
+		Action:        "USER_BLOCKED",
+		ResourceType:  "USER",
+		ResourceID:    userID,
+		Details:       map[string]interface{}{"reason": reason},
+		CreatedAt:     time.Now(),
+		SecurityLevel: &lvl,
+	})
+
+	return nil
 }
 
 // UnblockUser unblocks a user account

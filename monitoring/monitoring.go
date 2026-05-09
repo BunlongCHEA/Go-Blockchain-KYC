@@ -89,6 +89,7 @@ type UserActivityStats struct {
 type StorageInterface interface {
 	SaveAuditLog(log *models.AuditLog) error
 	BlockUser(userID, reason string) error
+	IsAdminUser(userID string) (bool, error) // Check before auto-block
 }
 
 // ==================== Config ====================
@@ -469,20 +470,24 @@ func (m *MonitoringService) saveAlertToAuditLog(alert *AnomalyAlert) {
 
 // autoBlockUser automatically blocks user on critical alerts
 func (m *MonitoringService) autoBlockUser(userID string, alert *AnomalyAlert) {
-	// log.Printf("AUTO-BLOCK: User %s blocked due to %s", userID, alert.Type)
-
-	// if m.storage != nil {
-	// 	m.storage.BlockUser(userID, string(alert.Type))
-	// }
-
-	// alert.ActionTaken = "USER_AUTO_BLOCKED"
-
 	// Never block pseudo-users — they are middleware labels, not real accounts.
 	// storage.BlockUser("anonymous",...) is a no-op SQL UPDATE (0 rows),
 	// but the log line is alarming and misleading. Suppress it entirely.
 	if isSystemUser(userID) {
 		return // ← stops "AUTO-BLOCK: User anonymous blocked" log
 	}
+
+	// Never block admin role users
+	// Admin is the only account that can call PUT /api/v1/users (UnblockUser).
+	// If admin is auto-blocked, the system becomes unrecoverable without DB access.
+	if m.storage != nil {
+		if isAdmin, err := m.storage.IsAdminUser(userID); err == nil && isAdmin {
+			log.Printf("AUTO-BLOCK SKIPPED: User %s has admin role — alert recorded but account not blocked", userID)
+			alert.ActionTaken = "AUTO_BLOCK_SKIPPED_ADMIN"
+			return
+		}
+	}
+
 	log.Printf("AUTO-BLOCK: User %s blocked due to %s", userID, alert.Type)
 	if m.storage != nil {
 		if err := m.storage.BlockUser(userID, string(alert.Type)); err != nil {
