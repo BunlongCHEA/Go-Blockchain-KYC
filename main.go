@@ -679,6 +679,11 @@ func (b *combinedBlocker) SaveAuditLog(l *models.AuditLog) error {
 	return b.pg.SaveAuditLog(l)
 }
 
+// IsAdminUser delegates to Postgres so monitoring can skip auto-block for admins.
+func (b *combinedBlocker) IsAdminUser(userID string) (bool, error) {
+	return b.pg.IsAdminUser(userID)
+}
+
 // handleGracefulShutdown handles graceful shutdown on SIGINT/SIGTERM
 func handleGracefulShutdown(monitoringService *monitoring.MonitoringService, store storage.Storage, consensusEngine consensus.Consensus) {
 	sigChan := make(chan os.Signal, 1)
