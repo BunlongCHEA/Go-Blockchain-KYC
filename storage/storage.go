@@ -48,6 +48,7 @@ type Storage interface {
 	GetHighSecurityAuditLogs(maxLevel int, days int, limit int) ([]*models.AuditLog, error)
 
 	// User operations
+	IsAdminUser(userID string) (bool, error)
 	BlockUser(userID, reason string) error
 	UnblockUser(userID string) error
 	SaveUser(user *auth.User) error
