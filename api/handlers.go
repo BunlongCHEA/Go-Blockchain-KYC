@@ -155,6 +155,7 @@ func NewHandlers(
 	cfg *config.Config,
 	envelope *crypto.EnvelopeEncryptor,
 	signingKeyMgr *crypto.SigningKeyManager,
+	kycService *services.KYCService,
 ) *Handlers {
 	return &Handlers{
 		blockchain:          blockchain,
@@ -167,7 +168,7 @@ func NewHandlers(
 		config:              cfg,
 		envelope:            envelope,
 		signingKeyMgr:       signingKeyMgr,
-		kycService:          services.NewKYCService(storage),
+		kycService:          kycService,
 	}
 }
 

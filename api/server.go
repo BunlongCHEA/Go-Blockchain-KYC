@@ -16,6 +16,7 @@ import (
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/monitoring"
+	"Go-Blockchain-KYC/services"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/verification"
 )
@@ -85,8 +86,11 @@ func (s *Server) Start() error {
 	}
 	log.Printf("[Server] active signing key: %s", keyID)
 
+	// Create KYC service (CBS notifier wired to config)
+	kycSvc := services.NewKYCService(s.storage, &s.config.CBSIntegration)
+
 	// Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr, kycSvc)
 
 	// Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)

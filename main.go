@@ -15,7 +15,6 @@ import (
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/monitoring"
-	"Go-Blockchain-KYC/services"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/verification"
 )
@@ -99,8 +98,6 @@ func main() {
 	log.Println("\n7. Initializing Identity Verification Service...")
 	verificationService := initializeVerification(cfg)
 	log.Println("   ✓ Verification service initialized")
-
-	kycSvc := services.NewKYCService(store, &cfg.CBSIntegration)
 
 	// Initialize monitoring service
 	log.Println("\n8. Initializing Monitoring Service...")
