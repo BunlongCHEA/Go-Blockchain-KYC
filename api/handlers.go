@@ -28,6 +28,7 @@ import (
 	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/monitoring"
+	"Go-Blockchain-KYC/services"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/utils"
 	"Go-Blockchain-KYC/verification"
@@ -45,6 +46,7 @@ type Handlers struct {
 	config              *config.Config
 	envelope            *crypto.EnvelopeEncryptor
 	signingKeyMgr       *crypto.SigningKeyManager
+	kycService          *services.KYCService
 }
 
 // UpdateBankRequest — full or partial bank update
@@ -165,6 +167,7 @@ func NewHandlers(
 		config:              cfg,
 		envelope:            envelope,
 		signingKeyMgr:       signingKeyMgr,
+		kycService:          services.NewKYCService(storage),
 	}
 }
 
@@ -4837,4 +4840,89 @@ func (h *Handlers) DeleteIntegrationKey(w http.ResponseWriter, r *http.Request) 
 		map[string]interface{}{"actor": actor})
 
 	SendSuccess(w, "key deleted", map[string]interface{}{"id": keyID})
+}
+
+// ==================== Suspend & Expire KYC ====================
+
+// SuspendKYC suspends a VERIFIED KYC record and notifies CBS via NextJS.
+// POST /api/v1/kyc/suspend
+func (h *Handlers) SuspendKYC(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+		Reason     string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.CustomerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+
+	// 1. Update blockchain in-memory state
+	if err := h.blockchain.SuspendKYC(req.CustomerID, user.BankID, user.ID, req.Reason); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// 2. Persist to DB + notify CBS via NextJS (kycService handles both)
+	if err := h.kycService.SuspendKYC(req.CustomerID, user.ID); err != nil {
+		log.Printf("[SuspendKYC] post-suspend error: %v", err)
+		// Do NOT fail — blockchain state already updated
+	}
+
+	h.audit(r, ActionKYCUpdate, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"status":      models.StatusSuspended,
+		"reason":      req.Reason,
+	})
+
+	SendSuccess(w, "KYC suspended successfully", map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"status":      models.StatusSuspended,
+	})
+}
+
+// ExpireKYC expires a KYC record and notifies CBS via NextJS.
+// POST /api/v1/kyc/expire
+func (h *Handlers) ExpireKYC(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CustomerID string `json:"customer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.CustomerID == "" {
+		SendBadRequest(w, "customer_id is required")
+		return
+	}
+
+	// 1. Update blockchain in-memory state
+	if err := h.blockchain.ExpireKYC(req.CustomerID); err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// 2. Persist to DB + notify CBS via NextJS
+	if err := h.kycService.ExpireKYC(req.CustomerID); err != nil {
+		log.Printf("[ExpireKYC] post-expire error: %v", err)
+	}
+
+	h.audit(r, ActionKYCUpdate, ResourceKYC, req.CustomerID, map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"status":      models.StatusExpired,
+	})
+
+	SendSuccess(w, "KYC expired successfully", map[string]interface{}{
+		"customer_id": req.CustomerID,
+		"status":      models.StatusExpired,
+	})
 }

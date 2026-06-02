@@ -68,5 +68,8 @@
     "url": "http://localhost:5001",
     "timeout_json": 300,
     "timeout_multipart": 600
+  },
+  "cbs_integration": {
+    "nextjs_webhook_url": "http://localhost:3000/api/integration/kyc-webhook"
   }
 }

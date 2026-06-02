@@ -111,4 +111,12 @@ type Storage interface {
 	IncrementIntegrationKeyStats(keyID, scope string) error
 	SoftDeleteIntegrationKey(keyID string) error
 	GetIntegrationKeyByID(keyID string) (*models.IntegrationKey, error)
+
+	// For external KYC verification (CBS integration)
+	// Fetches raw encrypted rows for a given bank + id_type — used to
+	// decrypt and match the id_number without exposing PII in memory unnecessarily.
+	GetKYCRawByBankAndIDType(bankID, idType string) ([]KYCRawRow, error)
+	// Fetches the auth.User whose customer_id == the given Go-KYC customer_id.
+	// Used to verify role=customer / is_active / is_deleted eligibility.
+	GetUserByCustomerID(customerID string) (*auth.User, error)
 }

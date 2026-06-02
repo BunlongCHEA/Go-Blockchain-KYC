@@ -8,15 +8,16 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server        ServerConfig        `json:"server"`
-	Database      DatabaseConfig      `json:"database"`
-	JWT           JWTConfig           `json:"jwt"`
-	Crypto        CryptoConfig        `json:"crypto"`
-	Consensus     ConsensusConfig     `json:"consensus"`
-	Blockchain    BlockchainConfig    `json:"blockchain"`
-	Verification  VerificationConfig  `json:"verification"`
-	Monitoring    MonitoringConfig    `json:"monitoring"`
-	PythonService PythonServiceConfig `json:"python_service"`
+	Server         ServerConfig         `json:"server"`
+	Database       DatabaseConfig       `json:"database"`
+	JWT            JWTConfig            `json:"jwt"`
+	Crypto         CryptoConfig         `json:"crypto"`
+	Consensus      ConsensusConfig      `json:"consensus"`
+	Blockchain     BlockchainConfig     `json:"blockchain"`
+	Verification   VerificationConfig   `json:"verification"`
+	Monitoring     MonitoringConfig     `json:"monitoring"`
+	PythonService  PythonServiceConfig  `json:"python_service"`
+	CBSIntegration CBSIntegrationConfig `json:"cbs_integration"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -28,6 +29,14 @@ type ServerConfig struct {
 	IdleTimeout  int    `json:"idle_timeout"`  // seconds
 	TLSCertFile  string `json:"tls_cert_file"`
 	TLSKeyFile   string `json:"tls_key_file"`
+}
+
+// CBSIntegrationConfig holds NextJS gateway connection settings.
+// nextjs_webhook_url  — safe to commit, not a secret.
+// integration_key     — loaded from env NEXTJS_INTEGRATION_KEY only, never config file.
+type CBSIntegrationConfig struct {
+	// NextJS webhook relay URL (update config.json when NextJS domain changes)
+	NextJSWebhookURL string `json:"nextjs_webhook_url"`
 }
 
 // Helper methods to get durations
@@ -283,4 +292,19 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// GetNextJSWebhookURL returns the NextJS webhook URL.
+// Env var NEXTJS_KYC_WEBHOOK_URL overrides config.json (useful for local dev).
+func (c *CBSIntegrationConfig) GetNextJSWebhookURL() string {
+	if v := os.Getenv("NEXTJS_KYC_WEBHOOK_URL"); v != "" {
+		return v
+	}
+	return c.NextJSWebhookURL
+}
+
+// GetIntegrationKey returns the raw NextJS integration API key.
+// Sourced from env NEXTJS_INTEGRATION_KEY only — never stored in config file.
+func (c *CBSIntegrationConfig) GetIntegrationKey() string {
+	return os.Getenv("NEXTJS_INTEGRATION_KEY")
 }

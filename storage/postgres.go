@@ -3168,3 +3168,130 @@ func (p *PostgresStorage) GetIntegrationKeyByID(keyID string) (*models.Integrati
 	}
 	return k, err
 }
+
+// ==================== External Verify helpers ====================
+
+// KYCRawRow holds a KYC record with its raw (still-encrypted) PII fields
+// and the key-material needed to decrypt them.
+// Used exclusively by the external-verify endpoint.
+type KYCRawRow struct {
+	CustomerID     string
+	FirstName      string
+	LastName       string
+	DateOfBirth    string
+	Nationality    string
+	IDType         string
+	IDNumberEnc    string // AES-GCM ciphertext (base64)
+	IDExpiryDate   string
+	AddressStreet  string
+	AddressCity    string
+	AddressState   string
+	AddressPostal  string
+	AddressCountry string
+	EmailEnc       string // AES-GCM ciphertext (base64)
+	PhoneEnc       string // AES-GCM ciphertext (base64)
+	Status         string
+	BankID         string
+	WrappedDEK     string // DEK wrapped by KEK
+	KEKID          string // which KEK was used
+}
+
+// GetKYCRawByBankAndIDType fetches all KYC rows for a given bank and id_type
+// including the wrapped_dek / encryption_key_id needed for decryption.
+// Returns only rows that have a wrapped_dek (envelope-encrypted rows).
+func (p *PostgresStorage) GetKYCRawByBankAndIDType(bankID, idType string) ([]KYCRawRow, error) {
+	query := `
+		SELECT
+			customer_id, first_name, last_name, date_of_birth,
+			COALESCE(nationality, ''),
+			id_type,
+			id_number_encrypted,
+			COALESCE(id_expiry_date, ''),
+			COALESCE(address_street, ''),
+			COALESCE(address_city, ''),
+			COALESCE(address_state, ''),
+			COALESCE(address_postal_code, ''),
+			COALESCE(address_country, ''),
+			email_encrypted,
+			phone_encrypted,
+			status,
+			bank_id,
+			COALESCE(wrapped_dek, ''),
+			COALESCE(encryption_key_id, '')
+		FROM kyc_records
+		WHERE bank_id = $1
+		  AND id_type = $2
+		  AND wrapped_dek IS NOT NULL
+		  AND wrapped_dek <> ''
+	`
+
+	rows, err := p.db.Query(query, bankID, idType)
+	if err != nil {
+		return nil, fmt.Errorf("GetKYCRawByBankAndIDType: %w", err)
+	}
+	defer rows.Close()
+
+	var out []KYCRawRow
+	for rows.Next() {
+		var r KYCRawRow
+		if err := rows.Scan(
+			&r.CustomerID, &r.FirstName, &r.LastName, &r.DateOfBirth,
+			&r.Nationality, &r.IDType, &r.IDNumberEnc, &r.IDExpiryDate,
+			&r.AddressStreet, &r.AddressCity, &r.AddressState,
+			&r.AddressPostal, &r.AddressCountry,
+			&r.EmailEnc, &r.PhoneEnc,
+			&r.Status, &r.BankID,
+			&r.WrappedDEK, &r.KEKID,
+		); err != nil {
+			return nil, fmt.Errorf("GetKYCRawByBankAndIDType scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetUserByCustomerID retrieves an auth.User whose customer_id matches the
+// given Go-KYC customer_id (i.e. the KYC subject, not the bank employee).
+func (p *PostgresStorage) GetUserByCustomerID(customerID string) (*auth.User, error) {
+	query := `
+		SELECT
+			id, username, email,
+			password_hash, password_salt, role,
+			COALESCE(bank_id, ''),
+			COALESCE(customer_id, ''),
+			is_active,
+			COALESCE(is_deleted, FALSE),
+			COALESCE(password_change_required, TRUE),
+			COALESCE(login_count, 0),
+			created_at, updated_at,
+			COALESCE(last_login, '0001-01-01 00:00:00')
+		FROM users
+		WHERE customer_id = $1
+		  AND is_deleted = FALSE
+		LIMIT 1
+	`
+
+	user := &auth.User{}
+	var role string
+	var lastLogin time.Time
+
+	err := p.db.QueryRow(query, customerID).Scan(
+		&user.ID, &user.Username, &user.Email,
+		&user.PasswordHash, &user.PasswordSalt, &role,
+		&user.BankID, &user.CustomerID,
+		&user.IsActive, &user.IsDeleted,
+		&user.PasswordChangeRequired, &user.LoginCount,
+		&user.CreatedAt, &user.UpdatedAt, &lastLogin,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found for customer_id: %s", customerID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetUserByCustomerID: %w", err)
+	}
+	user.Role = auth.Role(role)
+	if !lastLogin.IsZero() && lastLogin.Year() > 1 {
+		user.LastLogin = lastLogin
+	}
+	return user, nil
+}

@@ -401,6 +401,29 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleIntegrationService)(
 				http.HandlerFunc(handlers.DeleteIntegrationKey))))
 
+	// ==================== External Verify (CBS integration) ====================
+	// Called by Core Banking System to verify a customer by document before
+	// creating a CBS customer record.
+	// Allowed roles: admin, bank_admin, bank_officer, integration_service
+	mux.Handle("POST /api/v1/kyc/external-verify",
+		middleware.Authenticate(
+			middleware.RequireRole(
+				auth.RoleAdmin,
+				auth.RoleBankAdmin,
+				auth.RoleBankOfficer,
+				auth.RoleIntegrationService,
+			)(http.HandlerFunc(handlers.ExternalVerifyKYC))))
+
+	mux.Handle("POST /api/v1/kyc/suspend",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin, auth.RoleBankOfficer)(
+				http.HandlerFunc(handlers.SuspendKYC))))
+
+	mux.Handle("POST /api/v1/kyc/expire",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
+				http.HandlerFunc(handlers.ExpireKYC))))
+
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
 
