@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
 	"Go-Blockchain-KYC/auth"
+	kyccrypto "Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/storage"
 )
 
@@ -79,7 +82,10 @@ func (h *Handlers) ExternalVerifyKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.IDType = strings.TrimSpace(strings.ToUpper(req.IDType))
+	// Normalise — do NOT uppercase id_type; the DB may store it in any case.
+	// We use LOWER() on both sides in SQL, so keep the original casing here
+	// to avoid double-transformation confusion.
+	req.IDType = strings.TrimSpace(req.IDType)
 	req.IDNumber = strings.TrimSpace(req.IDNumber)
 	req.BankID = strings.TrimSpace(req.BankID)
 
@@ -120,13 +126,32 @@ func (h *Handlers) ExternalVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 5. Decrypt id_number for each row and compare ───────────────────────
+	//
+	// Two decryption paths:
+	//   A) Envelope-encrypted  — wrapped_dek != "" && kek_id != ""
+	//      Uses h.envelope.DecryptField (current path, post-migration records).
+	//   B) Legacy-encrypted    — wrapped_dek == ""
+	//      Uses the old crypto.Encryptor with config.Crypto.EncryptionKey
+	//      (records created before envelope encryption was deployed).
 	var matchedRow *storage.KYCRawRow
 	for i := range rawRows {
 		row := &rawRows[i]
-		if row.WrappedDEK == "" || row.KEKID == "" {
-			continue // skip rows without envelope key material
+
+		var plainBytes []byte
+		var decErr error
+
+		if row.WrappedDEK != "" && row.KEKID != "" {
+			// Path A: envelope encryption
+			plainBytes, decErr = h.envelope.DecryptField(row.IDNumberEnc, row.WrappedDEK, row.KEKID)
+		} else {
+			// Path B: legacy direct-AES encryption (pre-envelope records)
+			var plain string
+			plain, decErr = decryptLegacyField(h, row.IDNumberEnc)
+			if decErr == nil {
+				plainBytes = []byte(plain)
+			}
 		}
-		plainBytes, decErr := h.envelope.DecryptField(row.IDNumberEnc, row.WrappedDEK, row.KEKID)
+
 		if decErr != nil {
 			log.Printf("[ExternalVerifyKYC] decrypt id_number for %s: %v", row.CustomerID, decErr)
 			continue
@@ -223,15 +248,74 @@ func (h *Handlers) ExternalVerifyKYC(w http.ResponseWriter, r *http.Request) {
 	SendSuccess(w, "KYC verified successfully", resp)
 }
 
-// decryptFieldSafe decrypts a ciphertext using envelope; returns empty string on error.
+// ─── Decrypt helpers ──────────────────────────────────────────────────────────
+
+// decryptFieldSafe decrypts a PII field and returns an empty string on any error
+// so a partial failure doesn't abort the whole response.
+//
+// Two paths:
+//   - Envelope (new): wrappedDEK and kekID both non-empty → h.envelope.DecryptField
+//   - Legacy (old):   wrappedDEK empty                   → decryptLegacyField
 func decryptFieldSafe(h *Handlers, ciphertext, wrappedDEK, kekID string) string {
-	if ciphertext == "" || wrappedDEK == "" || kekID == "" {
+	if ciphertext == "" {
 		return ""
 	}
-	plain, err := h.envelope.DecryptField(ciphertext, wrappedDEK, kekID)
+	if wrappedDEK != "" && kekID != "" {
+		// Envelope-encrypted record (post-migration)
+		plain, err := h.envelope.DecryptField(ciphertext, wrappedDEK, kekID)
+		if err != nil {
+			log.Printf("[decryptFieldSafe] envelope decrypt warning: %v", err)
+			return ""
+		}
+		return string(plain)
+	}
+	// Legacy record (pre-migration, wrapped_dek = NULL)
+	plain, err := decryptLegacyField(h, ciphertext)
 	if err != nil {
-		log.Printf("[decryptFieldSafe] warning: %v", err)
+		log.Printf("[decryptFieldSafe] legacy decrypt warning: %v", err)
 		return ""
 	}
-	return string(plain)
+	return plain
+}
+
+// decryptLegacyField decrypts a ciphertext that was encrypted with the old
+// crypto.Encryptor (direct AES-256-GCM using config.Crypto.EncryptionKey).
+//
+// These are KYC records created before envelope encryption was deployed.
+// The config key is expected to be a base64-encoded 32-byte value.
+func decryptLegacyField(h *Handlers, ciphertext string) (string, error) {
+	if ciphertext == "" {
+		return "", fmt.Errorf("empty ciphertext")
+	}
+
+	encKey := h.config.Crypto.EncryptionKey
+	if encKey == "" {
+		return "", fmt.Errorf("crypto.encryption_key not set — cannot decrypt legacy record")
+	}
+
+	// Determine the raw key bytes.
+	// Priority:
+	//   1. Raw string bytes — the original code did []byte(encryptionKey) directly,
+	//      so a 32-char hex string like "b2238066b2001667869629d24a9f5fd4"
+	//      gives exactly 32 bytes and is the common case.
+	//   2. Base64 — if the string isn't 32 bytes raw, try decoding as base64
+	//      (e.g. a newly generated 32-byte key encoded for config storage).
+	keyBytes := []byte(encKey)
+	if len(keyBytes) != 32 {
+		if decoded, err2 := base64.StdEncoding.DecodeString(encKey); err2 == nil && len(decoded) == 32 {
+			keyBytes = decoded
+		}
+	}
+	if len(keyBytes) != 32 {
+		return "", fmt.Errorf(
+			"legacy encryption key must be 32 bytes — got %d (raw) — check crypto.encryption_key in config",
+			len([]byte(encKey)),
+		)
+	}
+
+	enc, err := kyccrypto.NewEncryptor(keyBytes)
+	if err != nil {
+		return "", fmt.Errorf("build legacy encryptor: %w", err)
+	}
+	return enc.DecryptString(ciphertext)
 }

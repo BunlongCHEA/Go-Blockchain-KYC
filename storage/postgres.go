@@ -3220,9 +3220,7 @@ func (p *PostgresStorage) GetKYCRawByBankAndIDType(bankID, idType string) ([]KYC
 			COALESCE(encryption_key_id, '')
 		FROM kyc_records
 		WHERE bank_id = $1
-		  AND id_type = $2
-		  AND wrapped_dek IS NOT NULL
-		  AND wrapped_dek <> ''
+		  AND LOWER(id_type) = LOWER($2)
 	`
 
 	rows, err := p.db.Query(query, bankID, idType)
