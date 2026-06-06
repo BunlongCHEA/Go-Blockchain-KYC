@@ -111,6 +111,18 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermBlockchainRead)(
 				http.HandlerFunc(handlers.ValidateChain))))
 
+	// Delete ALL pending transactions (admin only)
+	mux.Handle("DELETE /api/v1/blockchain/pending",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.DeletePendingTransactions))))
+
+	// Delete ONE pending transaction by ID (admin only)
+	mux.Handle("DELETE /api/v1/blockchain/pending/transaction",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.DeleteOnePendingTransaction))))
+
 	// ==================== Audit Routes
 
 	// Monitoring Routes

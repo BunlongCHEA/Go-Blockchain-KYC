@@ -1538,16 +1538,10 @@ func (h *Handlers) DeleteOnePendingTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// ── Remove from in-memory pool ────────────────────────────────────────────
+	// ── Step 1: find the customerID for audit purposes ────────────────────────
+	// GetPendingTransactions() returns a safe copy — no lock held here.
 	all := h.blockchain.GetPendingTransactions()
 	var customerID string
-	memRemoved := 0
-
-	kept := make([]interface{}, 0) // typed slice — assigned below via removeFromSlice
-	_ = kept
-
-	// Use the existing per-customer remove with a targeted customerID lookup.
-	// First find the customerID for the given txID.
 	for _, tx := range all {
 		if tx.ID == req.TransactionID {
 			customerID = tx.CustomerID
@@ -1559,20 +1553,13 @@ func (h *Handlers) DeleteOnePendingTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Re-get pending for this customer, remove the specific tx
-	pending := h.blockchain.GetPendingTransactions()
-	final := pending[:0]
-	for _, tx := range pending {
-		if tx.ID == req.TransactionID {
-			memRemoved++
-		} else {
-			final = append(final, tx)
-		}
+	// ── Step 2: remove from in-memory pool (thread-safe via mutex inside) ─────
+	memRemoved := 0
+	if h.blockchain.RemovePendingByID(req.TransactionID) {
+		memRemoved = 1
 	}
-	// Swap in the filtered slice (direct field access — Blockchain.PendingTransactions is exported)
-	h.blockchain.PendingTransactions = final
 
-	// ── Remove from DB ────────────────────────────────────────────────────────
+	// ── Step 3: remove from DB ────────────────────────────────────────────────
 	dbRemoved := 0
 	if h.storage != nil {
 		if dbErr := h.storage.DeletePendingTransaction(req.TransactionID); dbErr != nil {

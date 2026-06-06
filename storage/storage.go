@@ -25,6 +25,8 @@ type Storage interface {
 	GetTransaction(id string) (*models.Transaction, error)
 	GetTransactionsByCustomer(customerID string) ([]*models.Transaction, error)
 	GetPendingTransactions() ([]*models.Transaction, error)
+	DeletePendingTransactionsByCustomer(customerID string) (int, error)
+	DeleteAllPendingTransactions() (int, error)
 	DeletePendingTransaction(id string) error
 
 	// KYC operations

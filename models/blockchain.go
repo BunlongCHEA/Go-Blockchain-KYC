@@ -547,28 +547,51 @@ func (bc *Blockchain) GetStats() map[string]interface{} {
 
 // RemovePendingTransactionsByCustomer removes every pending transaction
 // whose CustomerID matches the given value from the in-memory pool.
-//
+// Thread-safe (acquires write lock).
 // Returns the count of removed entries.
 func (bc *Blockchain) RemovePendingTransactionsByCustomer(customerID string) int {
-	kept := make([]*Transaction, 0, len(bc.PendingTransactions))
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	kept := make([]*Transaction, 0, len(bc.PendingTxs))
 	removed := 0
 
-	for _, tx := range bc.PendingTransactions {
+	for _, tx := range bc.PendingTxs {
 		if tx.CustomerID == customerID {
 			removed++
 		} else {
 			kept = append(kept, tx)
 		}
 	}
-	bc.PendingTransactions = kept
+	bc.PendingTxs = kept
 	return removed
 }
 
 // RemoveAllPendingTransactions clears the entire in-memory pending pool.
-//
+// Thread-safe (acquires write lock).
 // Returns the count of removed entries.
 func (bc *Blockchain) RemoveAllPendingTransactions() int {
-	count := len(bc.PendingTransactions)
-	bc.PendingTransactions = make([]*Transaction, 0)
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	count := len(bc.PendingTxs)
+	bc.PendingTxs = make([]*Transaction, 0)
 	return count
+}
+
+// RemovePendingByID removes a single pending transaction by its exact ID.
+// Thread-safe (acquires write lock).
+// Returns true when the transaction was found and removed, false when not found.
+func (bc *Blockchain) RemovePendingByID(txID string) bool {
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	for i, tx := range bc.PendingTxs {
+		if tx.ID == txID {
+			// Order-preserving delete
+			bc.PendingTxs = append(bc.PendingTxs[:i], bc.PendingTxs[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
