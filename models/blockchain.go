@@ -544,3 +544,31 @@ func (bc *Blockchain) GetStats() map[string]interface{} {
 		"latest_block_hash":  bc.Blocks[len(bc.Blocks)-1].Hash,
 	}
 }
+
+// RemovePendingTransactionsByCustomer removes every pending transaction
+// whose CustomerID matches the given value from the in-memory pool.
+//
+// Returns the count of removed entries.
+func (bc *Blockchain) RemovePendingTransactionsByCustomer(customerID string) int {
+	kept := make([]*Transaction, 0, len(bc.PendingTransactions))
+	removed := 0
+
+	for _, tx := range bc.PendingTransactions {
+		if tx.CustomerID == customerID {
+			removed++
+		} else {
+			kept = append(kept, tx)
+		}
+	}
+	bc.PendingTransactions = kept
+	return removed
+}
+
+// RemoveAllPendingTransactions clears the entire in-memory pending pool.
+//
+// Returns the count of removed entries.
+func (bc *Blockchain) RemoveAllPendingTransactions() int {
+	count := len(bc.PendingTransactions)
+	bc.PendingTransactions = make([]*Transaction, 0)
+	return count
+}

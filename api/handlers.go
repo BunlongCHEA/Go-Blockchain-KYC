@@ -174,7 +174,11 @@ func NewHandlers(
 
 // ==================== Auth Handlers ====================
 
-// Register handles user registration
+// Register handles user registration.
+//
+// The user is NOT considered registered until it is persisted to the database.
+// If the DB write fails the in-memory entry is tombstoned so the user cannot
+// login, and HTTP 500 is returned to the client.
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	var req auth.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -182,28 +186,48 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Step 1 — Add user to in-memory auth map (validates uniqueness, hashes pw)
 	user, err := h.authService.Register(&req)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
-	// Persist user to DB so login survives restart
-	// for ALL roles including "customer" so every registered user is durable.
+	// Step 2 — Persist to database.
+	//
+	// If this fails we MUST rollback the in-memory state so the user cannot
+	// login during the current process lifetime.  We do this by overwriting
+	// the in-memory entry with a tombstoned copy (IsActive=false, IsDeleted=true)
+	// via LoadUser(), which is an upsert into the auth map.
+	//
+	// After rollback we return HTTP 500 — registration did not succeed.
 	if h.storage != nil {
 		if dbErr := h.storage.SaveUser(user); dbErr != nil {
-			// Log but don't fail the registration — user is in memory and
-			// can operate this session; next restart may require re-register.
-			log.Printf("[Register] Warning: could not persist user to DB: %v", dbErr)
+			// ── Rollback: tombstone the in-memory entry ──────────────────────
+			user.IsActive = false
+			user.IsDeleted = true
+			h.authService.LoadUser(user) // overwrites the live entry with tombstone
+
+			log.Printf("[Register] DB persist failed for %q — in-memory entry tombstoned: %v",
+				req.Username, dbErr)
+
+			SendInternalError(w,
+				"Registration could not be completed due to a database error. "+
+					"Please try again. If the problem persists contact support.")
+			return
 		}
 
-		// Stamp password_changed_at = NOW() on registration
+		// Stamp password_changed_at = NOW so the password-expiry clock starts.
 		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
-			pgStore.UpdatePasswordChangedAt(user.ID)
+			if stampErr := pgStore.UpdatePasswordChangedAt(user.ID); stampErr != nil {
+				log.Printf("[Register] UpdatePasswordChangedAt warning for %q: %v",
+					req.Username, stampErr)
+				// Non-fatal — policy expiry will use creation time as fallback.
+			}
 		}
 	}
 
-	// Audit log
+	// Audit successful registration
 	h.audit(r, ActionRegister, ResourceAuth, user.ID, map[string]interface{}{
 		"username": user.Username,
 		"role":     user.Role,
@@ -792,13 +816,12 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CustomerID string `json:"customer_id"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		SendBadRequest(w, "invalid request body")
 		return
 	}
 
-	// Get existing KYC to check status
+	// ── 1. Load KYC (unencrypted check — we only need status/bankID here) ────
 	kyc, err := h.blockchain.ReadKYC(req.CustomerID, false)
 	if err != nil {
 		SendNotFound(w, err.Error())
@@ -806,72 +829,101 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !kyc.CanVerify() {
-		SendBadRequest(w, fmt.Sprintf("cannot verify KYC with status:  %s", kyc.Status))
+		SendBadRequest(w, fmt.Sprintf("cannot verify KYC with status: %s", kyc.Status))
 		return
 	}
 
-	// ── Resolve bankID: admin has no BankID, fall back to KYC's bank ──
+	// ── 2. Resolve bank ID (admin users have no BankID) ───────────────────────
 	bankID := user.BankID
 	if bankID == "" {
 		bankID = kyc.BankID
 	}
 
-	// This will create transaction and add to pending
-	err = h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID, user.Username)
-	if err != nil {
+	// ── 3. Create blockchain transaction (adds to pending pool) ───────────────
+	if err := h.blockchain.VerifyKYC(req.CustomerID, bankID, user.ID, user.Username); err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
-	// Persist the pending transaction to DB so it survives restart ──
+	// ── 4. Persist pending transaction to DB (survives restart) ───────────────
 	if h.storage != nil {
-		pendingTxs := h.blockchain.GetPendingTransactions()
-		for _, tx := range pendingTxs {
+		for _, tx := range h.blockchain.GetPendingTransactions() {
 			if tx.CustomerID == req.CustomerID {
-				if err := h.storage.SaveTransaction(tx); err != nil {
-					log.Printf("[VerifyKYC] Warning: could not persist tx to DB: %v", err)
+				if saveErr := h.storage.SaveTransaction(tx); saveErr != nil {
+					log.Printf("[VerifyKYC] persist tx warning: %v", saveErr)
 				}
 				break
 			}
 		}
 	}
 
-	// Update in database — use targeted UPDATE to preserve scan fields
+	// ── 5. Update KYC status in DB (preserves scan / review fields) ───────────
 	if h.storage != nil {
-		if err := h.storage.UpdateKYCStatus(
+		if updateErr := h.storage.UpdateKYCStatus(
 			req.CustomerID,
 			models.StatusVerified,
-			user.ID,           // verified_by = who clicked Verify => user.Username
-			time.Now().Unix(), // verification_date = now
-		); err != nil {
-			log.Printf("[VerifyKYC] DB update warning: %v", err)
+			user.ID,
+			time.Now().Unix(),
+		); updateErr != nil {
+			log.Printf("[VerifyKYC] DB status update warning: %v", updateErr)
 		}
 	}
 
-	// Audit log for KYC verification
+	// ── 6. Audit the verification ─────────────────────────────────────────────
 	h.audit(r, ActionKYCVerify, ResourceKYC, req.CustomerID, map[string]interface{}{
 		"customer_id": req.CustomerID,
 		"bank_id":     bankID,
 		"status":      models.StatusVerified,
 	})
 
-	SendSuccess(w, "KYC verified - transaction created for blockchain", map[string]interface{}{
+	// ── 7. Auto-create / find customer portal account ─────────────────────────
+	// ensureCustomerUser is defined in api/kyc_auto_user.go.
+	// It is idempotent — safe to call even if the customer already registered.
+	portalResult, portalErr := h.ensureCustomerUser(req.CustomerID, r)
+
+	// ── 8. Build response ─────────────────────────────────────────────────────
+	response := map[string]interface{}{
 		"customer_id":       req.CustomerID,
 		"status":            models.StatusVerified,
 		"on_blockchain":     false,
 		"pending_for_block": true,
 		"message":           "KYC verified.  Transaction added to pending pool.  Mine a block to add to blockchain.",
-	})
+	}
 
-	// err := h.blockchain.VerifyKYC(req.CustomerID, user.BankID, user.ID)
-	// if err != nil {
-	// 	SendBadRequest(w, err.Error())
-	// 	return
-	// }
+	switch {
+	case portalErr != nil:
+		// Verification succeeded; only the portal step failed.  Log it but
+		// do NOT fail the whole request — the KYC is already verified.
+		log.Printf("[VerifyKYC] portal account warning for %s: %v", req.CustomerID, portalErr)
+		response["portal_access"] = map[string]interface{}{
+			"status":  "error",
+			"message": "KYC verified, but portal account setup encountered an error: " + portalErr.Error(),
+			"action":  "Retry or create the account manually via POST /api/v1/users.",
+		}
 
-	// h.blockchain.MineBlock()
+	case portalResult.Created:
+		// Brand-new account — include the temporary credentials.
+		response["portal_access"] = map[string]interface{}{
+			"status":                   "created",
+			"username":                 portalResult.User.Username,
+			"temp_password":            portalResult.TempPassword,
+			"password_change_required": true,
+			"login_url":                "/login/customer",
+			"note": "Share these credentials securely (one-time show). " +
+				"The customer must change the password on first login.",
+		}
 
-	// SendSuccess(w, "KYC verified successfully", nil)
+	default:
+		// Account already existed (customer registered via the portal before verification).
+		response["portal_access"] = map[string]interface{}{
+			"status":    "exists",
+			"username":  portalResult.User.Username,
+			"login_url": "/login/customer",
+			"note":      "Customer already has portal access. No new account was created.",
+		}
+	}
+
+	SendSuccess(w, "KYC verified - transaction created for blockchain", response)
 }
 
 // RejectKYC rejects a KYC record - Only updates status, no blockchain
@@ -1385,6 +1437,167 @@ func (h *Handlers) ValidateChain(w http.ResponseWriter, r *http.Request) {
 	})
 
 	SendSuccess(w, "", map[string]bool{"is_valid": isValid})
+}
+
+// DeletePendingTransactions removes pending transactions from both the
+// in-memory blockchain pool and the persistent database.
+//
+// DELETE /api/v1/blockchain/pending
+//
+//	Removes ALL pending transactions.
+//
+// DELETE /api/v1/blockchain/pending?customer_id=<id>
+//
+//	Removes only the pending transactions for the given customer.
+//
+// Response:
+//
+//	{
+//	  "success": true,
+//	  "data": {
+//	    "scope":               "all" | "customer",
+//	    "customer_id":         "cus_..." | "",
+//	    "removed_from_memory": 3,
+//	    "removed_from_db":     3,
+//	    "remaining_pending":   0
+//	  }
+//	}
+func (h *Handlers) DeletePendingTransactions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+
+	var memRemoved, dbRemoved int
+	var dbErr error
+
+	if customerID != "" {
+		// ── Scoped delete: one customer's pending transactions ────────────────
+		memRemoved = h.blockchain.RemovePendingTransactionsByCustomer(customerID)
+
+		if h.storage != nil {
+			if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+				dbRemoved, dbErr = pgStore.DeletePendingTransactionsByCustomer(customerID)
+				if dbErr != nil {
+					log.Printf("[DeletePendingTransactions] DB warning (customer=%s): %v",
+						customerID, dbErr)
+				}
+			}
+		}
+	} else {
+		// ── Delete ALL pending transactions ───────────────────────────────────
+		memRemoved = h.blockchain.RemoveAllPendingTransactions()
+
+		if h.storage != nil {
+			if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+				dbRemoved, dbErr = pgStore.DeleteAllPendingTransactions()
+				if dbErr != nil {
+					log.Printf("[DeletePendingTransactions] DB warning (delete-all): %v", dbErr)
+				}
+			}
+		}
+	}
+
+	scope := "all"
+	if customerID != "" {
+		scope = "customer"
+	}
+
+	h.audit(r, "BLOCKCHAIN_PENDING_DELETE", "BLOCKCHAIN", customerID,
+		map[string]interface{}{
+			"scope":          scope,
+			"customer_id":    customerID,
+			"removed_memory": memRemoved,
+			"removed_db":     dbRemoved,
+		})
+
+	msg := "All pending transactions removed"
+	if customerID != "" {
+		msg = "Pending transactions removed for customer " + customerID
+	}
+
+	SendSuccess(w, msg, map[string]interface{}{
+		"scope":               scope,
+		"customer_id":         customerID,
+		"removed_from_memory": memRemoved,
+		"removed_from_db":     dbRemoved,
+		"remaining_pending":   len(h.blockchain.GetPendingTransactions()),
+	})
+}
+
+// DeleteOnePendingTransaction removes a single pending transaction by its ID.
+//
+// DELETE /api/v1/blockchain/pending/transaction
+// Body: { "transaction_id": "<id>" }
+//
+// This is more surgical than DeletePendingTransactions when a customer has
+// multiple pending entries and only one needs to be discarded.
+func (h *Handlers) DeleteOnePendingTransaction(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TransactionID string `json:"transaction_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TransactionID == "" {
+		SendBadRequest(w, "transaction_id is required")
+		return
+	}
+
+	// ── Remove from in-memory pool ────────────────────────────────────────────
+	all := h.blockchain.GetPendingTransactions()
+	var customerID string
+	memRemoved := 0
+
+	kept := make([]interface{}, 0) // typed slice — assigned below via removeFromSlice
+	_ = kept
+
+	// Use the existing per-customer remove with a targeted customerID lookup.
+	// First find the customerID for the given txID.
+	for _, tx := range all {
+		if tx.ID == req.TransactionID {
+			customerID = tx.CustomerID
+			break
+		}
+	}
+	if customerID == "" {
+		SendNotFound(w, "pending transaction not found: "+req.TransactionID)
+		return
+	}
+
+	// Re-get pending for this customer, remove the specific tx
+	pending := h.blockchain.GetPendingTransactions()
+	final := pending[:0]
+	for _, tx := range pending {
+		if tx.ID == req.TransactionID {
+			memRemoved++
+		} else {
+			final = append(final, tx)
+		}
+	}
+	// Swap in the filtered slice (direct field access — Blockchain.PendingTransactions is exported)
+	h.blockchain.PendingTransactions = final
+
+	// ── Remove from DB ────────────────────────────────────────────────────────
+	dbRemoved := 0
+	if h.storage != nil {
+		if dbErr := h.storage.DeletePendingTransaction(req.TransactionID); dbErr != nil {
+			log.Printf("[DeleteOnePendingTransaction] DB warning (tx=%s): %v",
+				req.TransactionID, dbErr)
+		} else {
+			dbRemoved = 1
+		}
+	}
+
+	h.audit(r, "BLOCKCHAIN_PENDING_TX_DELETE", "BLOCKCHAIN", req.TransactionID,
+		map[string]interface{}{
+			"transaction_id": req.TransactionID,
+			"customer_id":    customerID,
+			"removed_memory": memRemoved,
+			"removed_db":     dbRemoved,
+		})
+
+	SendSuccess(w, "Pending transaction removed", map[string]interface{}{
+		"transaction_id":      req.TransactionID,
+		"customer_id":         customerID,
+		"removed_from_memory": memRemoved,
+		"removed_from_db":     dbRemoved,
+		"remaining_pending":   len(h.blockchain.GetPendingTransactions()),
+	})
 }
 
 // ==================== Health Check ====================

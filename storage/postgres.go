@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"Go-Blockchain-KYC/auth"
@@ -411,6 +412,35 @@ func (p *PostgresStorage) GetPendingTransactions() ([]*models.Transaction, error
 	return p.scanTransactions(rows)
 }
 
+// DeletePendingTransactionsByCustomer removes all pending transactions for a
+// specific customer from the transactions table.
+//
+// Returns the number of rows deleted.
+func (p *PostgresStorage) DeletePendingTransactionsByCustomer(customerID string) (int, error) {
+	result, err := p.db.Exec(
+		`DELETE FROM transactions WHERE is_pending = TRUE AND customer_id = $1`,
+		customerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete pending transactions for customer %q: %w", customerID, err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+// DeleteAllPendingTransactions removes every pending transaction from the
+// transactions table.
+//
+// Returns the number of rows deleted.
+func (p *PostgresStorage) DeleteAllPendingTransactions() (int, error) {
+	result, err := p.db.Exec(`DELETE FROM transactions WHERE is_pending = TRUE`)
+	if err != nil {
+		return 0, fmt.Errorf("delete all pending transactions: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
 // DeletePendingTransaction deletes a pending transaction
 func (p *PostgresStorage) DeletePendingTransaction(id string) error {
 	query := `DELETE FROM transactions WHERE id = $1 AND is_pending = TRUE`
@@ -454,6 +484,31 @@ func (p *PostgresStorage) scanTransactions(rows *sql.Rows) ([]*models.Transactio
 }
 
 // ==================== KYC Operations ====================
+
+func normalizeAddressStreet(street string) string {
+	trimmed := strings.TrimSpace(street)
+	if trimmed == "" {
+		return ""
+	}
+
+	// If no comma present this is a legacy single-field address — preserve as-is.
+	if !strings.Contains(trimmed, ",") {
+		return trimmed
+	}
+
+	parts := strings.Split(trimmed, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	if len(cleaned) == 0 {
+		return trimmed // safety fallback
+	}
+	return strings.Join(cleaned, ", ")
+}
 
 // SaveKYC saves a KYC record
 func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
@@ -522,15 +577,16 @@ func (p *PostgresStorage) SaveKYC(kyc *models.KYCData) error {
 	}
 
 	_, err := p.db.Exec(query,
-		kyc.CustomerID,         // $1
-		kyc.FirstName,          // $2
-		kyc.LastName,           // $3
-		kyc.DateOfBirth,        // $4
-		kyc.Nationality,        // $5
-		kyc.IDType,             // $6
-		idNumber,               // $7
-		kyc.IDExpiryDate,       // $8
-		kyc.Address.Street,     // $9
+		kyc.CustomerID,   // $1
+		kyc.FirstName,    // $2
+		kyc.LastName,     // $3
+		kyc.DateOfBirth,  // $4
+		kyc.Nationality,  // $5
+		kyc.IDType,       // $6
+		idNumber,         // $7
+		kyc.IDExpiryDate, // $8
+		// kyc.Address.Street,     // $9
+		normalizeAddressStreet(kyc.Address.Street), // $9
 		kyc.Address.City,       // $10
 		kyc.Address.State,      // $11
 		kyc.Address.PostalCode, // $12

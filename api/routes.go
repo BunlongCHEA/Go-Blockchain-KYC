@@ -220,10 +220,10 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequirePermission(auth.PermKYCReject)(
 				http.HandlerFunc(handlers.RejectKYC))))
 
-	mux.Handle("POST /api/v1/kyc/auto-verify",
-		middleware.Authenticate(
-			middleware.RequirePermission(auth.PermKYCVerify)(
-				http.HandlerFunc(handlers.AutoVerifyKYC))))
+	// mux.Handle("POST /api/v1/kyc/auto-verify",
+	// 	middleware.Authenticate(
+	// 		middleware.RequirePermission(auth.PermKYCVerify)(
+	// 			http.HandlerFunc(handlers.AutoVerifyKYC))))
 
 	// KYC Review Routes
 	mux.Handle("POST /api/v1/kyc/review",
