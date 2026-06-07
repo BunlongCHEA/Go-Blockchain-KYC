@@ -176,9 +176,15 @@ func NewHandlers(
 
 // Register handles user registration.
 //
-// The user is NOT considered registered until it is persisted to the database.
-// If the DB write fails the in-memory entry is tombstoned so the user cannot
-// login, and HTTP 500 is returned to the client.
+// For customer role:
+//   - In-memory user is created with is_active=TRUE so the registration flow
+//     can proceed (login → create KYC → scan). This is a TEMPORARY state.
+//   - DB record is saved with is_active=FALSE so the customer cannot log in
+//     after a server restart (or once the in-memory entry is tombstoned).
+//   - CreateKYC tombstones the in-memory entry after KYC is submitted.
+//   - ensureCustomerUser (triggered by VerifyKYC) re-activates the account.
+//
+// For all other roles: normal flow — saved as active in both DB and memory.
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	var req auth.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -186,43 +192,52 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 1 — Add user to in-memory auth map (validates uniqueness, hashes pw)
+	// Step 1: add user to in-memory auth map (validates uniqueness, hashes pw)
 	user, err := h.authService.Register(&req)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
-	// Step 2 — Persist to database.
-	//
-	// If this fails we MUST rollback the in-memory state so the user cannot
-	// login during the current process lifetime.  We do this by overwriting
-	// the in-memory entry with a tombstoned copy (IsActive=false, IsDeleted=true)
-	// via LoadUser(), which is an upsert into the auth map.
-	//
-	// After rollback we return HTTP 500 — registration did not succeed.
+	// Step 2: persist to DB
 	if h.storage != nil {
-		if dbErr := h.storage.SaveUser(user); dbErr != nil {
-			// ── Rollback: tombstone the in-memory entry ──────────────────────
-			user.IsActive = false
-			user.IsDeleted = true
-			h.authService.LoadUser(user) // overwrites the live entry with tombstone
+		if req.Role == auth.RoleCustomer {
+			// ── Customer: save to DB as INACTIVE ─────────────────────────────
+			// The in-memory entry stays active so the registration wizard can
+			// continue (login to get JWT → create KYC). CreateKYC will tombstone
+			// the in-memory entry once the KYC record is submitted.
+			// ensureCustomerUser re-activates when admin verifies.
+			dbUser := *user
+			dbUser.IsActive = false // portal access blocked until KYC verified
 
-			log.Printf("[Register] DB persist failed for %q — in-memory entry tombstoned: %v",
-				req.Username, dbErr)
-
-			SendInternalError(w,
-				"Registration could not be completed due to a database error. "+
-					"Please try again. If the problem persists contact support.")
-			return
+			if dbErr := h.storage.SaveUser(&dbUser); dbErr != nil {
+				// DB failed — tombstone in-memory too so no ghost account
+				user.IsActive = false
+				user.IsDeleted = true
+				h.authService.LoadUser(user)
+				log.Printf("[Register] DB persist failed for customer %q: %v", req.Username, dbErr)
+				SendInternalError(w, "Registration could not be completed. Please try again.")
+				return
+			}
+		} else {
+			// ── Non-customer: normal flow (active immediately) ────────────────
+			if dbErr := h.storage.SaveUser(user); dbErr != nil {
+				user.IsActive = false
+				user.IsDeleted = true
+				h.authService.LoadUser(user)
+				log.Printf("[Register] DB persist failed for %q — tombstoned: %v", req.Username, dbErr)
+				SendInternalError(w,
+					"Registration could not be completed due to a database error. "+
+						"Please try again. If the problem persists contact support.")
+				return
+			}
 		}
 
-		// Stamp password_changed_at = NOW so the password-expiry clock starts.
+		// Stamp password_changed_at so the expiry clock starts.
 		if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
 			if stampErr := pgStore.UpdatePasswordChangedAt(user.ID); stampErr != nil {
 				log.Printf("[Register] UpdatePasswordChangedAt warning for %q: %v",
 					req.Username, stampErr)
-				// Non-fatal — policy expiry will use creation time as fallback.
 			}
 		}
 	}
@@ -646,21 +661,31 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save to database
-	// log.Printf("SaveKYC result for %s: %v", kycData.CustomerID, h.storage.SaveKYC(kycData))
-
 	if h.storage != nil {
 		if err := h.storage.SaveKYC(kycData); err != nil {
 			SendInternalError(w, fmt.Sprintf("failed to save KYC to database: %v", err))
 			return
 		}
-		// Link KYC customer_id to user so /kyc/me can resolve the record.
-		// customer_id is a hash (GenerateCustomerID) ≠ user.ID, so we store
-		// it on the user row. Only customer-role users need this link.
+
 		if user.Role == auth.RoleCustomer {
+			// ── Link customer_id → user in DB (is_active stays FALSE) ─────────
+			// We explicitly set is_active=FALSE here to prevent the current in-memory
+			// active state from being accidentally written to DB by SaveUser.
 			user.CustomerID = customerID
-			if linkErr := h.storage.SaveUser(user); linkErr != nil {
-				log.Printf("[CreateKYC] Warning: could not link customer_id to user: %v", linkErr)
+			linkedUser := *user
+			linkedUser.IsActive = false // keep inactive in DB
+			if linkErr := h.storage.SaveUser(&linkedUser); linkErr != nil {
+				log.Printf("[CreateKYC] Warning: could not link customer_id to user %s: %v",
+					user.Username, linkErr)
 			}
+
+			// ── Tombstone in-memory: blocks further logins until KYC verified ──
+			// The registration wizard (login → create KYC) has now completed.
+			// The customer should not be able to log in again until admin verifies.
+			user.IsActive = false
+			h.authService.LoadUser(user)
+			log.Printf("[CreateKYC] customer %q locked pending KYC verification (customer_id=%s)",
+				user.Username, customerID)
 		}
 	}
 
@@ -672,11 +697,6 @@ func (h *Handlers) CreateKYC(w http.ResponseWriter, r *http.Request) {
 		"last_name":   req.LastName,
 		"id_type":     req.IDType,
 	})
-
-	// SendCreated(w, "KYC created successfully", map[string]interface{}{
-	// 	"customer_id": customerID,
-	// 	"status":      kycData.Status,
-	// })
 
 	SendCreated(w, "KYC created successfully - pending verification", map[string]interface{}{
 		"customer_id":   customerID,
@@ -924,60 +944,6 @@ func (h *Handlers) VerifyKYC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SendSuccess(w, "KYC verified - transaction created for blockchain", response)
-}
-
-// RejectKYC rejects a KYC record - Only updates status, no blockchain
-func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r)
-	if !ok {
-		SendUnauthorized(w, "user not found")
-		return
-	}
-
-	var req struct {
-		CustomerID string `json:"customer_id"`
-		Reason     string `json:"reason"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		SendBadRequest(w, "invalid request body")
-		return
-	}
-
-	err := h.blockchain.RejectKYC(req.CustomerID, user.BankID, user.ID, req.Reason)
-	if err != nil {
-		SendBadRequest(w, err.Error())
-		return
-	}
-
-	// Update in database — preserve scan fields
-	if h.storage != nil {
-		if err := h.storage.UpdateKYCStatus(
-			req.CustomerID,
-			models.StatusRejected,
-			user.ID,
-			time.Now().Unix(),
-		); err != nil {
-			log.Printf("[RejectKYC] DB update warning: %v", err)
-		}
-	}
-
-	// Audit log for KYC rejection
-	h.audit(r, ActionKYCReject, ResourceKYC, req.CustomerID, map[string]interface{}{
-		"customer_id": req.CustomerID,
-		"reason":      req.Reason,
-	})
-
-	SendSuccess(w, "KYC rejected - NOT added to blockchain", map[string]interface{}{
-		"customer_id":   req.CustomerID,
-		"status":        models.StatusRejected,
-		"on_blockchain": false,
-		"reason":        req.Reason,
-	})
-
-	// h.blockchain.MineBlock()
-
-	// SendSuccess(w, "KYC rejected", nil)
 }
 
 // DeleteKYC deletes a KYC record
@@ -5067,13 +5033,33 @@ func (h *Handlers) SuspendKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Update blockchain in-memory state
+	// Resolve bankID for the transaction (admin may have no BankID)
+	kyc, kycErr := h.blockchain.ReadKYC(req.CustomerID, false)
+	bankID := user.BankID
+	if bankID == "" && kycErr == nil {
+		bankID = kyc.BankID
+	}
+
+	// Update blockchain in-memory state
 	if err := h.blockchain.SuspendKYC(req.CustomerID, user.BankID, user.ID, req.Reason); err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
-	// 2. Persist to DB + notify CBS via NextJS (kycService handles both)
+	// Persist the new SUSPEND pending transaction to DB (if one was created)
+	// This only happens when the KYC was previously VERIFIED.
+	if h.storage != nil {
+		for _, tx := range h.blockchain.GetPendingTransactions() {
+			if tx.CustomerID == req.CustomerID && tx.Type == models.TxSuspend {
+				if saveErr := h.storage.SaveTransaction(tx); saveErr != nil {
+					log.Printf("[SuspendKYC] persist tx warning: %v", saveErr)
+				}
+				break
+			}
+		}
+	}
+
+	// Persist to DB + notify CBS via NextJS (kycService handles both)
 	if err := h.kycService.SuspendKYC(req.CustomerID, user.ID); err != nil {
 		log.Printf("[SuspendKYC] post-suspend error: %v", err)
 		// Do NOT fail — blockchain state already updated
@@ -5086,8 +5072,10 @@ func (h *Handlers) SuspendKYC(w http.ResponseWriter, r *http.Request) {
 	})
 
 	SendSuccess(w, "KYC suspended successfully", map[string]interface{}{
-		"customer_id": req.CustomerID,
-		"status":      models.StatusSuspended,
+		"customer_id":      req.CustomerID,
+		"status":           models.StatusSuspended,
+		"pending_for_mine": true,
+		"message":          "SUSPEND transaction added to pending pool. Mine a block to commit to blockchain.",
 	})
 }
 
@@ -5106,10 +5094,22 @@ func (h *Handlers) ExpireKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Update blockchain in-memory state
+	// Update blockchain in-memory state
 	if err := h.blockchain.ExpireKYC(req.CustomerID); err != nil {
 		SendBadRequest(w, err.Error())
 		return
+	}
+
+	// Persist new EXPIRE pending transaction to DB
+	if h.storage != nil {
+		for _, tx := range h.blockchain.GetPendingTransactions() {
+			if tx.CustomerID == req.CustomerID && tx.Type == models.TxExpire {
+				if saveErr := h.storage.SaveTransaction(tx); saveErr != nil {
+					log.Printf("[ExpireKYC] persist tx warning: %v", saveErr)
+				}
+				break
+			}
+		}
 	}
 
 	// 2. Persist to DB + notify CBS via NextJS
@@ -5123,7 +5123,78 @@ func (h *Handlers) ExpireKYC(w http.ResponseWriter, r *http.Request) {
 	})
 
 	SendSuccess(w, "KYC expired successfully", map[string]interface{}{
+		"customer_id":      req.CustomerID,
+		"status":           models.StatusExpired,
+		"pending_for_mine": true,
+		"message":          "EXPIRE transaction added to pending pool. Mine a block to commit to blockchain.",
+	})
+}
+
+// RejectKYC rejects a KYC record - Only updates status, no blockchain
+func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+		Reason     string `json:"reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	// Resolve bankID
+	kyc, kycErr := h.blockchain.ReadKYC(req.CustomerID, false)
+	bankID := user.BankID
+	if bankID == "" && kycErr == nil {
+		bankID = kyc.BankID
+	}
+
+	err := h.blockchain.RejectKYC(req.CustomerID, user.BankID, user.ID, req.Reason)
+	if err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	// Persist new REJECT pending transaction to DB
+	if h.storage != nil {
+		for _, tx := range h.blockchain.GetPendingTransactions() {
+			if tx.CustomerID == req.CustomerID && tx.Type == models.TxReject {
+				if saveErr := h.storage.SaveTransaction(tx); saveErr != nil {
+					log.Printf("[RejectKYC] persist tx warning: %v", saveErr)
+				}
+				break
+			}
+		}
+
+		// Update status in DB
+		if err := h.storage.UpdateKYCStatus(
+			req.CustomerID,
+			models.StatusRejected,
+			user.ID,
+			time.Now().Unix(),
+		); err != nil {
+			log.Printf("[RejectKYC] DB update warning: %v", err)
+		}
+	}
+
+	// Audit log for KYC rejection
+	h.audit(r, ActionKYCReject, ResourceKYC, req.CustomerID, map[string]interface{}{
 		"customer_id": req.CustomerID,
-		"status":      models.StatusExpired,
+		"reason":      req.Reason,
+	})
+
+	SendSuccess(w, "KYC rejected", map[string]interface{}{
+		"customer_id":      req.CustomerID,
+		"status":           models.StatusRejected,
+		"on_blockchain":    false,
+		"pending_for_mine": true,
+		"reason":           req.Reason,
+		"message":          "REJECT transaction added to pending pool. Mine a block to commit to blockchain.",
 	})
 }

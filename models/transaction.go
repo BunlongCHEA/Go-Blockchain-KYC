@@ -19,6 +19,7 @@ const (
 	TxReject  TransactionType = "REJECT"
 	TxDelete  TransactionType = "DELETE"
 	TxSuspend TransactionType = "SUSPEND"
+	TxExpire  TransactionType = "EXPIRE"
 )
 
 // Transaction represents a KYC transaction on the blockchain
@@ -148,4 +149,15 @@ func DeleteKYCTransaction(customerID, bankID, userID, reason string) *Transactio
 // SuspendKYCTransaction creates a suspension transaction
 func SuspendKYCTransaction(customerID, bankID, userID, reason string) *Transaction {
 	return NewTransaction(TxSuspend, customerID, nil, bankID, userID, reason)
+}
+
+// ExpireKYCTransaction creates an expiry transaction for a KYC record.
+// Used when expiring a VERIFIED KYC — produces a new blockchain event
+// without touching the original VERIFY block.
+//
+// userID = "system" when triggered by the expiry scheduler;
+//
+//	admin user ID when triggered manually.
+func ExpireKYCTransaction(customerID, bankID, userID string) *Transaction {
+	return NewTransaction(TxExpire, customerID, nil, bankID, userID, "KYC expired")
 }

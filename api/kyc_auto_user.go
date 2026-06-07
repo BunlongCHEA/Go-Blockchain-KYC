@@ -1,7 +1,5 @@
 package api
 
-// kyc_auto_user.go
-//
 // Auto-creates a customer portal account when an admin manually verifies a
 // KYC record.  Called exclusively from the VerifyKYC handler.
 //

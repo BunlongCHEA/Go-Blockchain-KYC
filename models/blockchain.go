@@ -308,63 +308,87 @@ func (bc *Blockchain) VerifyKYC(customerID, bankID, userID, username string) err
 	// return bc.AddTransaction(tx)
 }
 
-// RejectKYC rejects a customer's KYC - Only updates status, NO blockchain transaction
+// RejectKYC rejects a customer's KYC.
+//
+// Same pattern as SuspendKYC: verified KYC gets a new TxReject pending
+// transaction; non-verified is a status-only update.
 func (bc *Blockchain) RejectKYC(customerID, bankID, userID, reason string) error {
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
-
-	// bc.mutex.RLock()
-	// _, exists := bc.KYCRecords[customerID]
-	// bc.mutex.RUnlock()
 
 	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	if kyc.Status == StatusVerified {
-		return errors.New("cannot reject verified KYC - already on blockchain")
-	}
+	// if kyc.Status == StatusVerified {
+	// 	return errors.New("cannot reject verified KYC - already on blockchain")
+	// }
+
+	wasVerified := kyc.Status == StatusVerified
 
 	// Update status only - NO transaction created
 	kyc.Status = StatusRejected
 	kyc.UpdatedAt = time.Now().Unix()
 
-	return nil
+	if wasVerified {
+		tx := RejectKYCTransaction(customerID, bankID, userID, reason)
+		bank, bankExists := bc.Banks[bankID]
+		if bankExists && bank.IsActive {
+			bc.PendingTxs = append(bc.PendingTxs, tx)
+		}
+	}
 
-	// tx := RejectKYCTransaction(customerID, bankID, userID, reason)
-	// return bc.AddTransaction(tx)
+	return nil
 }
 
-// SuspendKYC suspends a customer's KYC - Only updates status, NO blockchain transaction
+// SuspendKYC suspends a customer's KYC.
+//
+// If the record is VERIFIED (already on blockchain), a new TxSuspend
+// transaction is added to the pending pool so the event is committed
+// to the next mined block.
+//
+// For non-VERIFIED records: status-only update, no transaction.
 func (bc *Blockchain) SuspendKYC(customerID, bankID, userID, reason string) error {
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
-
-	// bc.mutex.RLock()
-	// _, exists := bc.KYCRecords[customerID]
-	// bc.mutex.RUnlock()
 
 	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
 		return errors.New("KYC record not found")
 	}
 
-	if kyc.Status == StatusVerified {
-		return errors.New("cannot suspend verified KYC - already on blockchain")
-	}
+	// if kyc.Status == StatusVerified {
+	// 	return errors.New("cannot suspend verified KYC - already on blockchain")
+	// }
+
+	// ── REMOVED: old guard "cannot suspend verified KYC - already on blockchain" ──
+	// Verified KYC CAN be suspended. The VERIFY block is immutable; we add a
+	// NEW SUSPEND transaction to the pending pool instead.
+
+	wasVerified := kyc.Status == StatusVerified
 
 	// Update status only - NO transaction created
 	kyc.Status = StatusSuspended
 	kyc.UpdatedAt = time.Now().Unix()
 
-	return nil
+	// Emit a blockchain transaction only when changing from VERIFIED status.
+	// This preserves the audit trail: VERIFY → mine → SUSPEND → mine.
+	if wasVerified {
+		tx := SuspendKYCTransaction(customerID, bankID, userID, reason)
+		bank, bankExists := bc.Banks[bankID]
+		if bankExists && bank.IsActive {
+			bc.PendingTxs = append(bc.PendingTxs, tx)
+		}
+	}
 
-	// tx := SuspendKYCTransaction(customerID, bankID, userID, reason)
-	// return bc.AddTransaction(tx)
+	return nil
 }
 
-// ExpireKYC - Only updates status, NO blockchain transaction
+// ExpireKYC expires a customer's KYC.
+//
+// Can now be called on VERIFIED records (e.g. by the expiry scheduler).
+// Emits a TxExpire pending transaction when expiring a verified record.
 func (bc *Blockchain) ExpireKYC(customerID string) error {
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
@@ -374,13 +398,24 @@ func (bc *Blockchain) ExpireKYC(customerID string) error {
 		return errors.New("KYC record not found")
 	}
 
-	if kyc.Status == StatusVerified {
-		return errors.New("cannot expire verified KYC - already on blockchain")
-	}
+	// if kyc.Status == StatusVerified {
+	// 	return errors.New("cannot expire verified KYC - already on blockchain")
+	// }
+
+	wasVerified := kyc.Status == StatusVerified
+	bankID := kyc.BankID // preserve the originating bank
 
 	// Update status only - NO transaction created
 	kyc.Status = StatusExpired
 	kyc.UpdatedAt = time.Now().Unix()
+
+	if wasVerified {
+		tx := ExpireKYCTransaction(customerID, bankID, "system")
+		bank, bankExists := bc.Banks[bankID]
+		if bankExists && bank.IsActive {
+			bc.PendingTxs = append(bc.PendingTxs, tx)
+		}
+	}
 
 	return nil
 }
