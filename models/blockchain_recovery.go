@@ -27,10 +27,24 @@ func (bc *Blockchain) RecoverFromStorage(data *RecoveryData) error {
 			return data.Blocks[i].Index < data.Blocks[j].Index
 		})
 
-		// Replace chain with recovered blocks (use Blocks, not Chain)
-		bc.Blocks = make([]*Block, 0, len(data.Blocks))
-		for _, block := range data.Blocks {
-			bc.Blocks = append(bc.Blocks, block)
+		// // Replace chain with recovered blocks (use Blocks, not Chain)
+		// bc.Blocks = make([]*Block, 0, len(data.Blocks))
+		// for _, block := range data.Blocks {
+		// 	bc.Blocks = append(bc.Blocks, block)
+		// }
+
+		// bc.Blocks[0] is the freshly created (deterministic) genesis.
+		// Stored blocks start from index 1 (genesis is never saved to DB).
+		// Prepend the deterministic genesis so the full chain is present.
+		if data.Blocks[0].Index != 0 {
+			genesisBlock := bc.Blocks[0] // the deterministic genesis
+			bc.Blocks = make([]*Block, 0, len(data.Blocks)+1)
+			bc.Blocks = append(bc.Blocks, genesisBlock)
+			bc.Blocks = append(bc.Blocks, data.Blocks...)
+		} else {
+			// Genesis was stored (future-proof if you add that later)
+			bc.Blocks = make([]*Block, 0, len(data.Blocks))
+			bc.Blocks = append(bc.Blocks, data.Blocks...)
 		}
 		log.Printf("   ✓ Recovered %d blocks", len(data.Blocks))
 	}
