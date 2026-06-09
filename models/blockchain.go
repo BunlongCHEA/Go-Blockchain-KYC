@@ -130,7 +130,6 @@ func (bc *Blockchain) processTransaction(tx *Transaction) {
 		}
 	case TxVerify:
 		if kyc, exists := bc.KYCRecords[tx.CustomerID]; exists {
-			// kyc.Verify(tx.BankID)
 			kyc.Verify(tx.BankID, tx.UserID)
 		}
 	case TxReject:
@@ -140,6 +139,11 @@ func (bc *Blockchain) processTransaction(tx *Transaction) {
 	case TxSuspend:
 		if kyc, exists := bc.KYCRecords[tx.CustomerID]; exists {
 			kyc.Suspend()
+		}
+	case TxExpire:
+		if kyc, exists := bc.KYCRecords[tx.CustomerID]; exists {
+			kyc.Status = StatusExpired
+			kyc.UpdatedAt = time.Now().Unix()
 		}
 	case TxDelete:
 		delete(bc.KYCRecords, tx.CustomerID)
@@ -260,13 +264,16 @@ func (bc *Blockchain) DeleteKYC(customerID, bankID, userID, reason string) error
 }
 
 // VerifyKYC verifies a customer's KYC - ONLY this creates a transaction for blockchain
+// New behaviour:
+//
+//	PENDING        → first-time verify  → TxCreate (full KYC snapshot in chain)
+//	SUSPENDED      → re-activation      → TxVerify (lightweight event)
+//	EXPIRED        → re-validation      → TxVerify (lightweight event)
+//	REJECTED       → still blocked      → must start a new KYC
+//	VERIFIED       → still blocked      → already active
 func (bc *Blockchain) VerifyKYC(customerID, bankID, userID, username string) error {
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
-
-	// bc.mutex.RLock()
-	// _, exists := bc.KYCRecords[customerID]
-	// bc.mutex.RUnlock()
 
 	kyc, exists := bc.KYCRecords[customerID]
 	if !exists {
@@ -282,16 +289,25 @@ func (bc *Blockchain) VerifyKYC(customerID, bankID, userID, username string) err
 		return errors.New("cannot verify rejected KYC")
 	}
 
-	if kyc.Status == StatusExpired {
-		return errors.New("cannot verify expired KYC")
-	}
+	// if kyc.Status == StatusExpired {
+	// 	return errors.New("cannot verify expired KYC")
+	// }
+
+	// PENDING, SUSPENDED, EXPIRED may all be verified / re-verified. The VERIFY transaction captures the new VERIFIED status and gets mined to the blockchain, while the in-memory KYC record is updated immediately to reflect the change for API responses.
 
 	// Update status to VERIFIED
-	// kyc.Verify(bankID)
+	prevStatus := kyc.Status
 	kyc.Verify(bankID, username)
 
-	// NOW create transaction for blockchain (only for VERIFIED status)
-	tx := CreateKYCTransaction(kyc, bankID, userID)
+	// Transaction type depends on whether this is a first-time or re-verification:
+	//   PENDING → TxCreate   – embeds a snapshot of the full KYC record for audit
+	//   SUSPENDED/EXPIRED → TxVerify – lightweight re-activation event, no data re-embed
+	var tx *Transaction
+	if prevStatus == StatusPending {
+		tx = CreateKYCTransaction(kyc, bankID, userID) // CreateKYCTransaction snapshots kyc
+	} else {
+		tx = VerifyKYCTransaction(customerID, bankID, userID) // "KYC re-verified by bank"
+	}
 
 	// Validate bank authorization
 	bank, bankExists := bc.Banks[bankID]
@@ -303,9 +319,6 @@ func (bc *Blockchain) VerifyKYC(customerID, bankID, userID, username string) err
 	bc.PendingTxs = append(bc.PendingTxs, tx)
 
 	return nil
-
-	// tx := VerifyKYCTransaction(customerID, bankID, userID)
-	// return bc.AddTransaction(tx)
 }
 
 // RejectKYC rejects a customer's KYC.

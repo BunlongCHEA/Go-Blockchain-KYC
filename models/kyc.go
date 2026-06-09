@@ -180,6 +180,13 @@ func (k *KYCData) Suspend() {
 	k.UpdatedAt = time.Now().Unix()
 }
 
+// Expire marks the KYC as expired (e.g. ID document past validity date,
+// or periodic re-verification not completed within the grace window).
+func (k *KYCData) Expire() {
+	k.Status = StatusExpired
+	k.UpdatedAt = time.Now().Unix()
+}
+
 // ToJSON converts KYC data to JSON
 func (k *KYCData) ToJSON() ([]byte, error) {
 	return json.Marshal(k)
@@ -197,9 +204,16 @@ func (k *KYCData) CanModify() bool {
 	return k.Status != StatusVerified
 }
 
-// CanVerify checks if KYC can be verified
+// CanVerify checks if KYC can be verified for the first time or re-verified.
+//
+//	PENDING   → first-time admin approval
+//	SUSPENDED → admin lifting a suspension (re-activation)
+//	EXPIRED   → admin re-validating after document renewal
+//	REJECTED  → blocked: customer must submit a new KYC application
 func (k *KYCData) CanVerify() bool {
-	return k.Status == StatusPending
+	return k.Status == StatusPending ||
+		k.Status == StatusSuspended ||
+		k.Status == StatusExpired
 }
 
 // IsOnBlockchain checks if KYC is on blockchain

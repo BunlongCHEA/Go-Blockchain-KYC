@@ -122,13 +122,22 @@ func (t *Transaction) ToJSON() ([]byte, error) {
 }
 
 // CreateKYCTransaction creates a new KYC record transaction
+//
+// CreateKYCTransaction creates a TxCreate transaction with a SNAPSHOT of the
+// KYC data.  The snapshot disconnects the transaction from the live record so
+// future status changes (VERIFIED → SUSPENDED, etc.) cannot alter this
+// transaction's payload and break the Merkle-root hash of the mined block.
 func CreateKYCTransaction(kycData *KYCData, bankID, userID string) *Transaction {
-	return NewTransaction(TxCreate, kycData.CustomerID, kycData, bankID, userID, "KYC record created")
+	snapshot := *kycData // value-copy — severs pointer link to bc.KYCRecords entry
+	return NewTransaction(TxCreate, kycData.CustomerID, &snapshot, bankID, userID, "KYC record created")
 }
 
 // UpdateKYCTransaction creates an update KYC transaction
+//
+// Similar to CreateKYCTransaction, this creates a TxUpdate transaction with a snapshot of the KYC data to preserve the historical state of the record at the time of the update.
 func UpdateKYCTransaction(kycData *KYCData, bankID, userID, description string) *Transaction {
-	return NewTransaction(TxUpdate, kycData.CustomerID, kycData, bankID, userID, description)
+	snapshot := *kycData
+	return NewTransaction(TxUpdate, kycData.CustomerID, &snapshot, bankID, userID, description)
 }
 
 // VerifyKYCTransaction creates a verification transaction

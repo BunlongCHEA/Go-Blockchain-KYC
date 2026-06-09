@@ -17,6 +17,8 @@ import (
 	"Go-Blockchain-KYC/monitoring"
 	"Go-Blockchain-KYC/storage"
 	"Go-Blockchain-KYC/verification"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -98,6 +100,12 @@ func main() {
 	log.Println("\n7. Initializing Identity Verification Service...")
 	verificationService := initializeVerification(cfg)
 	log.Println("   ✓ Verification service initialized")
+
+	// Dev env auto-loader
+	// Loads dev.env if it exists in the project root.
+	if err := godotenv.Load("dev.env"); err != nil && !os.IsNotExist(err) {
+		log.Printf("[dev] godotenv: %v", err) // log unexpected errors, don't fatal
+	}
 
 	// Initialize monitoring service
 	log.Println("\n8. Initializing Monitoring Service...")
