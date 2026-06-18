@@ -122,6 +122,39 @@ POST /api/v1/certificate/verify
 
 ### 🔐 KEK Rotation (PII Envelope Encryption)
 
+PII at rest goes through three layers, each wrapped by the one above it:
+
+```bash
+KYC_ROOT_KEK (env var, in-memory only — never stored anywhere)
+    ↓ wraps
+Active KEK            → kek_keys.wrapped_key   (DB)
+    ↓ wraps
+DEK (per KYC record)  → kyc_records.wrapped_dek (DB)
+    ↓ encrypts
+PII ciphertext         → id_number_encrypted / email_encrypted / phone_encrypted
+```
+
+Three different things can rotate here, and they have very different blast radii. Knowing which one you're rotating — and what it does and doesn't touch — matters before you run any of them in production.
+
+| | **DEK** | **Active KEK** | **Root KEK** |
+|---|---|---|---|
+| What it is | One per KYC record, random | One active at a time, shared by all records | One per deployment, sourced from env |
+| Rotated how | Re-wrapped as a *side effect* of KEK rotation — never rotated on its own | New key generated, every DEK re-wrapped to it in the background | Same KEK plaintext, just re-encrypted under a new root |
+| Touches `kyc_records`? | — | Yes, every row (background job) | **Never** |
+| Touches `kek_keys`? | — | New row inserted | Existing row(s) re-encrypted in place |
+| Cost scales with KYC record count? | — | Yes | **No** — only with KEK count (typically 1–3) |
+| PII ciphertext re-encrypted? | No | No | No |
+
+---
+
+**DEK — generated once, never rotated directly**
+
+A fresh 32-byte DEK is generated the moment a KYC record is created, wraps that record's PII, and is itself wrapped by whichever KEK is active at that moment. It is never regenerated. The *only* thing that ever changes about a DEK after creation is which KEK its wrapper is encrypted under — and that only happens as a downstream effect of an Active KEK rotation (below). Root KEK rotation never touches it at all.
+
+---
+
+**Active KEK rotation — generates new key material, re-wraps every DEK**
+
 Think of this like **changing the master key to a safe, but re-locking every individual item inside with the new master key in the background.**
 
 ```bash
@@ -158,6 +191,45 @@ GET /api/v1/kyc?customer_id=<id>
 
 # Expected: email and phone show real values (not [ENCRYPTED])
 # If KEK re-wrap broke something you'd see decryption errors in Go logs
+```
+
+---
+
+**Root KEK rotation — re-wraps the wrapper, nothing below it moves**
+
+Think of this like **changing the combination on the safe that holds your master key — the master key inside, and everything it protects, stays exactly the same.**
+
+```bash
+BEFORE rotation:
+  kek_keys.wrapped_key    = encrypt(KEK_plaintext, ROOT-v1)
+  kyc_records.wrapped_dek = encrypt(DEK_plaintext, KEK_plaintext)
+
+AFTER rotation:
+  kek_keys.wrapped_key    = encrypt(KEK_plaintext, ROOT-v2)   ← only this changes
+  kyc_records.wrapped_dek = encrypt(DEK_plaintext, KEK_plaintext)   ← byte-for-byte identical
+```
+
+`KEK_plaintext` is decrypted with the old root and re-encrypted with the new root — same 32 bytes, different wrapper. Since `wrapped_dek` was never encrypted by the root to begin with (it's encrypted by the KEK), there is nothing in `kyc_records` to re-wrap, and PII ciphertext is untouched for the same reason one layer further down. This is why Root KEK rotation only updates a handful of rows in `kek_keys` regardless of whether you have 10 or 10 million KYC records — unlike Active KEK rotation above, which generates genuinely new key material and therefore does have to walk every record.
+
+What happens step-by-step:
+
+1. Admin proves knowledge of the current root (proof-of-knowledge check — no mutation yet)
+2. New root is generated client-side or supplied manually, format-validated, and previewed via fingerprint before anything is committed
+3. Every row in `kek_keys` is decrypted with the old root and re-encrypted with the new root, inside a single DB transaction — rolled back whole on any failure
+4. This server instance's in-memory root is swapped atomically and its KEK cache is cleared
+5. Operator updates `KYC_ROOT_KEK` in the environment / secrets manager and rolling-restarts every replica
+6. `kyc_records.wrapped_dek`, `system_keys.private_key_encrypted`, and all PII ciphertext remain byte-for-byte unchanged throughout
+
+**=> How to Verify**
+
+```bash
+# Confirms the active KEK can still be unwrapped with the current root,
+# then test-decrypts a small random sample of real records — no PII returned,
+# only pass/fail counts
+GET /api/v1/security/keys/root-kek/verify-health?sample=5
+
+# Expected: "overall_status": "healthy", "active_kek_ok": true
+# Run this on each replica after it restarts with the new root
 ```
 
 
