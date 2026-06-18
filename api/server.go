@@ -60,17 +60,19 @@ func NewServer(
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
-	// Initialize encryption and signing key management
+	// ── Initialize encryption and signing key management
 	rootKEK := s.config.Crypto.GetRootKEK()
 	if rootKEK == "" {
 		return fmt.Errorf("KYC_ROOT_KEK is not set (check env var or crypto.root_kek in config)")
 	}
 
+	// ── Initialize PostgresStorage-backed
 	pgStore, ok := s.storage.(*storage.PostgresStorage)
 	if !ok {
 		return fmt.Errorf("envelope encryption requires PostgresStorage")
 	}
 
+	// ── Initialize envelope encryptor and signing key manager
 	envelope, err := crypto.NewEnvelopeEncryptor(rootKEK, pgStore)
 	if err != nil {
 		return fmt.Errorf("envelope encryptor init: %w", err)
@@ -86,19 +88,51 @@ func (s *Server) Start() error {
 	}
 	log.Printf("[Server] active signing key: %s", keyID)
 
-	// Create KYC service (CBS notifier wired to config)
-	kycSvc := services.NewKYCService(s.storage, &s.config.CBSIntegration)
+	// ── RabbitMQ publisher, Create service for CBS notifier
+	var mqPublisher *services.KYCEventPublisher
 
-	// Create handlers
+	mqURL := s.config.RabbitMQ.GetAMQPURL()
+	aesKey := s.config.RabbitMQ.GetAESKey()
+	hmacKey := s.config.RabbitMQ.GetHMACKey()
+
+	if mqURL == "" {
+		log.Println("[Server] KYC_MQ_URL not set — RabbitMQ publisher disabled")
+	} else if aesKey == nil {
+		log.Println("[Server] KYC_MQ_AES_KEY not set — RabbitMQ publisher disabled")
+	} else if hmacKey == nil {
+		log.Println("[Server] KYC_MQ_HMAC_KEY not set — RabbitMQ publisher disabled")
+	} else {
+		mqCfg := &services.KYCEventPublisherConfig{
+			AMQPURL:    mqURL,
+			Exchange:   s.config.RabbitMQ.GetExchange(),
+			RoutingKey: "kyc.status.changed",
+			AESKey:     aesKey,
+			HMACKey:    hmacKey,
+		}
+		var mqErr error
+		mqPublisher, mqErr = services.NewKYCEventPublisher(mqCfg)
+		if mqErr != nil {
+			// Non-fatal: KYC status changes still commit to DB; MQ is best-effort
+			log.Printf("[Server] WARNING: RabbitMQ unavailable — KYC events DB-only: %v", mqErr)
+			mqPublisher = nil
+		} else {
+			log.Printf("[Server] KYC event publisher connected → exchange=%s", mqCfg.Exchange)
+			defer mqPublisher.Close()
+		}
+	}
+	// KYC service (publisher may be nil — handled inside)
+	kycSvc := services.NewKYCService(s.storage, mqPublisher)
+
+	// ── Create handlers
 	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr, kycSvc)
 
-	// Create middleware
+	// ── Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)
 
-	// Setup routes
+	// ── Setup routes
 	router := SetupRoutes(handlers, middleware)
 
-	// Start the renewal alert background scheduler.
+	// ── Start the renewal alert background scheduler.
 	// It polls every 5 min for alerts whose alert_date has passed and dispatches them via webhook / email according to each alert's delivery + send_interval.
 	scheduler := NewAlertScheduler(handlers)
 	scheduler.Start()

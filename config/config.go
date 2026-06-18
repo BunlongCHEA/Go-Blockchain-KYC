@@ -1,23 +1,26 @@
 package config
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"log"
 	"os"
 	"time"
 )
 
 // Config holds all application configuration
 type Config struct {
-	Server         ServerConfig         `json:"server"`
-	Database       DatabaseConfig       `json:"database"`
-	JWT            JWTConfig            `json:"jwt"`
-	Crypto         CryptoConfig         `json:"crypto"`
-	Consensus      ConsensusConfig      `json:"consensus"`
-	Blockchain     BlockchainConfig     `json:"blockchain"`
-	Verification   VerificationConfig   `json:"verification"`
-	Monitoring     MonitoringConfig     `json:"monitoring"`
-	PythonService  PythonServiceConfig  `json:"python_service"`
-	CBSIntegration CBSIntegrationConfig `json:"cbs_integration"`
+	Server        ServerConfig        `json:"server"`
+	Database      DatabaseConfig      `json:"database"`
+	JWT           JWTConfig           `json:"jwt"`
+	Crypto        CryptoConfig        `json:"crypto"`
+	Consensus     ConsensusConfig     `json:"consensus"`
+	Blockchain    BlockchainConfig    `json:"blockchain"`
+	Verification  VerificationConfig  `json:"verification"`
+	Monitoring    MonitoringConfig    `json:"monitoring"`
+	PythonService PythonServiceConfig `json:"python_service"`
+	// CBSIntegration CBSIntegrationConfig `json:"cbs_integration"`
+	RabbitMQ RabbitMQConfig `json:"rabbitmq"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -29,14 +32,6 @@ type ServerConfig struct {
 	IdleTimeout  int    `json:"idle_timeout"`  // seconds
 	TLSCertFile  string `json:"tls_cert_file"`
 	TLSKeyFile   string `json:"tls_key_file"`
-}
-
-// CBSIntegrationConfig holds NextJS gateway connection settings.
-// nextjs_webhook_url  — safe to commit, not a secret.
-// integration_key     — loaded from env NEXTJS_INTEGRATION_KEY only, never config file.
-type CBSIntegrationConfig struct {
-	// NextJS webhook relay URL (update config.json when NextJS domain changes)
-	NextJSWebhookURL string `json:"nextjs_webhook_url"`
 }
 
 // Helper methods to get durations
@@ -159,7 +154,8 @@ type MonitoringConfig struct {
 	LogLevel    string `json:"log_level"`
 }
 
-// PythonServiceConfig holds Python KYC AI service configuration
+// ── PythonServiceConfig holds Python KYC AI service configuration
+
 type PythonServiceConfig struct {
 	URL              string `json:"url"`               // base URL, e.g. http://localhost:5001
 	TimeoutJSON      int    `json:"timeout_json"`      // seconds - for JSON body requests (face compare, scan)
@@ -193,7 +189,7 @@ func (p *PythonServiceConfig) GetURL() string {
 	return "http://localhost:5001"
 }
 
-// GetRootKEK returns the 32-byte AES root key (base64) used to wrap DB-stored KEKs
+// ── GetRootKEK returns the 32-byte AES root key (base64) used to wrap DB-stored KEKs
 // To generate a new one:
 //
 //	openssl rand -base64 32
@@ -205,7 +201,7 @@ func (c *CryptoConfig) GetRootKEK() string {
 	return c.RootKEK
 }
 
-// Returns the configured into default values if not set in the config file
+// ── Returns the configured into default values if not set in the config file
 
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
@@ -294,17 +290,80 @@ func LoadConfig(path string) (*Config, error) {
 	return config, nil
 }
 
-// GetNextJSWebhookURL returns the NextJS webhook URL.
-// Env var NEXTJS_KYC_WEBHOOK_URL overrides config.json (useful for local dev).
-func (c *CBSIntegrationConfig) GetNextJSWebhookURL() string {
-	if v := os.Getenv("NEXTJS_KYC_WEBHOOK_URL"); v != "" {
-		return v
-	}
-	return c.NextJSWebhookURL
+// // ── CBSIntegrationConfig holds NextJS gateway connection settings.
+
+// // nextjs_webhook_url  — safe to commit, not a secret.
+// // integration_key     — loaded from env NEXTJS_INTEGRATION_KEY only, never config file.
+// type CBSIntegrationConfig struct {
+// 	// NextJS webhook relay URL (update config.json when NextJS domain changes)
+// 	NextJSWebhookURL string `json:"nextjs_webhook_url"`
+// }
+
+// // GetNextJSWebhookURL returns the NextJS webhook URL.
+// // Env var NEXTJS_KYC_WEBHOOK_URL overrides config.json (useful for local dev).
+// func (c *CBSIntegrationConfig) GetNextJSWebhookURL() string {
+// 	if v := os.Getenv("NEXTJS_KYC_WEBHOOK_URL"); v != "" {
+// 		return v
+// 	}
+// 	return c.NextJSWebhookURL
+// }
+
+// // GetIntegrationKey returns the raw NextJS integration API key.
+// // Sourced from env NEXTJS_INTEGRATION_KEY only — never stored in config file.
+// func (c *CBSIntegrationConfig) GetIntegrationKey() string {
+// 	return os.Getenv("NEXTJS_INTEGRATION_KEY")
+// }
+
+// ─── RabbitMQ
+// URL and exchange come from config.json.
+// AES/HMAC keys come from env vars ONLY — never stored in config file.
+
+type RabbitMQConfig struct {
+	URL      string `json:"url"`      // amqps://user:pass@host:5671/vhost
+	Exchange string `json:"exchange"` // kyc.events
 }
 
-// GetIntegrationKey returns the raw NextJS integration API key.
-// Sourced from env NEXTJS_INTEGRATION_KEY only — never stored in config file.
-func (c *CBSIntegrationConfig) GetIntegrationKey() string {
-	return os.Getenv("NEXTJS_INTEGRATION_KEY")
+// GetAMQPURL returns the broker URL or empty string if not configured.
+func (c *RabbitMQConfig) GetAMQPURL() string {
+	if url := os.Getenv("KYC_MQ_URL"); url != "" {
+		return url
+	}
+	return c.URL
+}
+
+// GetAESKey decodes KYC_MQ_AES_KEY from env (base64, must be 32 bytes).
+// Returns nil when the env var is absent — caller must handle gracefully.
+func (c *RabbitMQConfig) GetAESKey() []byte {
+	return decodeMQKey("KYC_MQ_AES_KEY")
+}
+
+// GetHMACKey decodes KYC_MQ_HMAC_KEY from env (base64, must be 32 bytes).
+func (c *RabbitMQConfig) GetHMACKey() []byte {
+	return decodeMQKey("KYC_MQ_HMAC_KEY")
+}
+
+// GetExchange returns the exchange name with a safe default.
+func (c *RabbitMQConfig) GetExchange() string {
+	if c.Exchange != "" {
+		return c.Exchange
+	}
+	return "kyc.events"
+}
+
+// decodeMQKey is a shared helper — decodes a base64 env var and validates length.
+func decodeMQKey(envVar string) []byte {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return nil
+	}
+	b, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		log.Printf("[config] WARNING: %s is not valid base64: %v", envVar, err)
+		return nil
+	}
+	if len(b) != 32 {
+		log.Printf("[config] WARNING: %s must decode to exactly 32 bytes, got %d", envVar, len(b))
+		return nil
+	}
+	return b
 }

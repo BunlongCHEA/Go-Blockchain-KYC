@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"Go-Blockchain-KYC/auth"
 	"Go-Blockchain-KYC/config"
 	"Go-Blockchain-KYC/crypto"
+	kyccrypto "Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/monitoring"
 	"Go-Blockchain-KYC/services"
@@ -4755,64 +4757,64 @@ func (h *Handlers) ListSigningKeys(w http.ResponseWriter, r *http.Request) {
 	SendSuccess(w, "", map[string]interface{}{"keys": keys, "count": len(keys)})
 }
 
-// RotateKEK generates a new KEK, activates it, and kicks off a background
-// re-wrap of all DEKs. Returns immediately; caller polls GetKEKRewrapStatus.
-// POST /api/v1/security/keys/kek/rotate
-func (h *Handlers) RotateKEK(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r)
-	if !ok {
-		SendUnauthorized(w, "user not found")
-		return
-	}
-	if h.envelope == nil {
-		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialized")
-		return
-	}
+// // RotateKEK generates a new KEK, activates it, and kicks off a background
+// // re-wrap of all DEKs. Returns immediately; caller polls GetKEKRewrapStatus.
+// // POST /api/v1/security/keys/kek/rotate
+// func (h *Handlers) RotateKEK(w http.ResponseWriter, r *http.Request) {
+// 	user, ok := GetUserFromContext(r)
+// 	if !ok {
+// 		SendUnauthorized(w, "user not found")
+// 		return
+// 	}
+// 	if h.envelope == nil {
+// 		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialized")
+// 		return
+// 	}
 
-	newKEKID, err := h.envelope.GenerateKEK(user.ID, false) // inactive for now
-	if err != nil {
-		SendInternalError(w, "generate KEK: "+err.Error())
-		return
-	}
-	if err := h.envelope.ActivateKEK(newKEKID, user.ID); err != nil {
-		SendInternalError(w, "activate KEK: "+err.Error())
-		return
-	}
+// 	newKEKID, err := h.envelope.GenerateKEK(user.ID, false) // inactive for now
+// 	if err != nil {
+// 		SendInternalError(w, "generate KEK: "+err.Error())
+// 		return
+// 	}
+// 	if err := h.envelope.ActivateKEK(newKEKID, user.ID); err != nil {
+// 		SendInternalError(w, "activate KEK: "+err.Error())
+// 		return
+// 	}
 
-	// Background rewrap — non-blocking.
-	go func() {
-		pgStore, ok := h.storage.(*storage.PostgresStorage)
-		if !ok {
-			return
-		}
-		rows, err := pgStore.ListKYCForRewrap(newKEKID)
-		if err != nil {
-			log.Printf("[KEK rotate] list rewrap rows: %v", err)
-			return
-		}
-		log.Printf("[KEK rotate] rewrapping %d rows under new KEK %s", len(rows), newKEKID)
-		for _, row := range rows {
-			newWrapped, newID, err := h.envelope.RewrapDEK(row.WrappedDEK, row.KEKID)
-			if err != nil {
-				log.Printf("[KEK rotate] rewrap %s failed: %v", row.CustomerID, err)
-				continue
-			}
-			if err := pgStore.RewrapKYCRecord(row.CustomerID, newWrapped, newID); err != nil {
-				log.Printf("[KEK rotate] persist rewrap %s failed: %v", row.CustomerID, err)
-			}
-		}
-		log.Printf("[KEK rotate] rewrap complete for KEK %s", newKEKID)
-	}()
+// 	// Background rewrap — non-blocking.
+// 	go func() {
+// 		pgStore, ok := h.storage.(*storage.PostgresStorage)
+// 		if !ok {
+// 			return
+// 		}
+// 		rows, err := pgStore.ListKYCForRewrap(newKEKID)
+// 		if err != nil {
+// 			log.Printf("[KEK rotate] list rewrap rows: %v", err)
+// 			return
+// 		}
+// 		log.Printf("[KEK rotate] rewrapping %d rows under new KEK %s", len(rows), newKEKID)
+// 		for _, row := range rows {
+// 			newWrapped, newID, err := h.envelope.RewrapDEK(row.WrappedDEK, row.KEKID)
+// 			if err != nil {
+// 				log.Printf("[KEK rotate] rewrap %s failed: %v", row.CustomerID, err)
+// 				continue
+// 			}
+// 			if err := pgStore.RewrapKYCRecord(row.CustomerID, newWrapped, newID); err != nil {
+// 				log.Printf("[KEK rotate] persist rewrap %s failed: %v", row.CustomerID, err)
+// 			}
+// 		}
+// 		log.Printf("[KEK rotate] rewrap complete for KEK %s", newKEKID)
+// 	}()
 
-	h.audit(r, ActionKEKRotate, ResourceSecurity, newKEKID, map[string]interface{}{
-		"actor": user.Username,
-	})
+// 	h.audit(r, ActionKEKRotate, ResourceSecurity, newKEKID, map[string]interface{}{
+// 		"actor": user.Username,
+// 	})
 
-	SendSuccess(w, "KEK rotated. Background re-wrap of DEKs has started.", map[string]interface{}{
-		"new_kek_id": newKEKID,
-		"note":       "DEK re-wrap runs in background. Old KEK stays available for unwrap until re-wrap completes.",
-	})
-}
+// 	SendSuccess(w, "KEK rotated. Background re-wrap of DEKs has started.", map[string]interface{}{
+// 		"new_kek_id": newKEKID,
+// 		"note":       "DEK re-wrap runs in background. Old KEK stays available for unwrap until re-wrap completes.",
+// 	})
+// }
 
 // ListKEKs — admin only.
 // GET /api/v1/security/keys/kek
@@ -4828,6 +4830,379 @@ func (h *Handlers) ListKEKs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	SendSuccess(w, "", map[string]interface{}{"keks": keks, "count": len(keks)})
+}
+
+// rotateRootKEKRequest is the JSON body for POST /api/v1/security/keys/root-kek/rotate.
+type rotateRootKEKRequest struct {
+	// ConfirmCurrent is the currently-active KYC_ROOT_KEK value (base64, 32 bytes).
+	// Required as a proof-of-knowledge gate — a valid JWT alone is not sufficient
+	// to authorise rotation; the caller must also know the current root key.
+	ConfirmCurrent string `json:"confirm_current"`
+
+	// NewRootKEK is the replacement 32-byte root key, base64-encoded.
+	// Generate one with:  openssl rand -base64 32
+	// If omitted, the server generates a cryptographically random key and
+	// returns it in the response body (shown ONCE — save it immediately).
+	NewRootKEK string `json:"new_root_kek,omitempty"`
+}
+
+// RotateRootKEK re-wraps all KEKs in kek_keys under a new root key without
+// downtime on this server instance, then returns the steps to complete the rotation.
+//
+// POST /api/v1/security/keys/root-kek/rotate
+// Role:     admin only
+// Requires: KYC_ROOT_KEK set at startup (envelope encryptor initialised)
+//
+// ─── Operator workflow ────────────────────────────────────────────────────────
+//
+//  1. While the server is running with the CURRENT root key, call this endpoint.
+//     Supply confirm_current = current KYC_ROOT_KEK value (proof-of-knowledge).
+//     Optionally supply new_root_kek (pre-generated key); if omitted the server
+//     auto-generates one.
+//
+//  2. On success, copy new_root_kek from the response.
+//
+//  3. Update KYC_ROOT_KEK in your environment / k8s secret / Vault to that value.
+//
+//  4. Rolling-restart all server replicas. Each replica picks up the new env var
+//     on boot. The already-rotated instance continues to serve requests normally
+//     while others restart.
+//
+// ─── What this does (and does NOT do) ────────────────────────────────────────
+//
+//	DOES:   Re-wraps every kek_keys.wrapped_key in one DB transaction.
+//	DOES:   Updates this instance's in-memory rootKEK and clears the KEK cache.
+//	DOES NOT: Touch kyc_records.wrapped_dek — DEKs are wrapped by the KEK,
+//	          not the root. Re-wrapping the KEKs is sufficient.
+//	DOES NOT: Touch system_keys — signing-key DEKs are also wrapped by the KEK.
+//
+// ─── Failure safety ───────────────────────────────────────────────────────────
+//
+//	If the DB write fails the transaction is rolled back. The old root remains
+//	valid, no data is lost, and the caller can retry safely.
+func (h *Handlers) RotateRootKEK(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+
+	if h.envelope == nil {
+		SendError(w, http.StatusServiceUnavailable,
+			"envelope encryptor not initialised — KYC_ROOT_KEK must be set at startup")
+		return
+	}
+
+	var req rotateRootKEKRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+
+	// ── 1. Proof-of-knowledge gate ────────────────────────────────────────────
+	// The caller must prove they know the CURRENT root key. This means a
+	// compromised JWT token alone cannot trigger rotation — the attacker would
+	// also need the secret env var value.
+	if req.ConfirmCurrent == "" {
+		SendBadRequest(w,
+			"confirm_current is required — supply the current KYC_ROOT_KEK env var value to authorise rotation")
+		return
+	}
+	if !h.envelope.VerifyCurrentRootKEK(req.ConfirmCurrent) {
+		h.audit(r, "ROOT_KEK_ROTATION_REJECTED", ResourceSecurity, "root_kek",
+			map[string]interface{}{
+				"actor":  user.Username,
+				"reason": "confirm_current did not match the active in-memory root KEK",
+			})
+		// 403 not 401: the user IS authenticated; they supplied wrong key material.
+		SendError(w, http.StatusForbidden,
+			"confirm_current does not match the active root KEK — rotation aborted")
+		return
+	}
+
+	// ── 2. Resolve the new root key ───────────────────────────────────────────
+	autoGenerated := req.NewRootKEK == ""
+	newRootKEK := req.NewRootKEK
+
+	if autoGenerated {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			SendInternalError(w, "failed to generate a cryptographically random root key")
+			return
+		}
+		newRootKEK = base64.StdEncoding.EncodeToString(raw)
+		for i := range raw {
+			raw[i] = 0 // zero the raw bytes; the base64 string is GC-managed
+		}
+	}
+
+	// ── 3. Validate the new root key before touching the database ─────────────
+	decoded, err := base64.StdEncoding.DecodeString(newRootKEK)
+	if err != nil {
+		SendBadRequest(w, "new_root_kek must be valid base64")
+		return
+	}
+	if len(decoded) != 32 {
+		SendBadRequest(w, fmt.Sprintf(
+			"new_root_kek must decode to exactly 32 bytes (got %d) — generate with: openssl rand -base64 32",
+			len(decoded),
+		))
+		return
+	}
+	for i := range decoded {
+		decoded[i] = 0 // zero the validation copy
+	}
+
+	// ── 4. Perform the rotation ────────────────────────────────────────────────
+	// Internally:
+	//   a. Snapshot currentRoot from e.rootKEK
+	//   b. For each kek_keys row: aesGCMDecrypt(currentRoot, wrappedKey) → plainKEK
+	//                              aesGCMEncrypt(newRoot,    plainKEK)   → newWrapped
+	//   c. Write all updates in ONE transaction (rolled back on any error)
+	//   d. Lock, set e.rootKEK = newRoot, clear kekCache, unlock
+	//
+	// If step (c) fails the old root is still valid — no partial state.
+	kekCount, err := h.envelope.RotateRootKEK(newRootKEK)
+	if err != nil {
+		h.audit(r, "ROOT_KEK_ROTATION_FAILED", ResourceSecurity, "root_kek",
+			map[string]interface{}{
+				"actor": user.Username,
+				"error": err.Error(),
+			})
+		SendInternalError(w, "root KEK rotation failed: "+err.Error())
+		return
+	}
+
+	// ── 4b. Persist rotation metadata for the admin UI's "last rotated" display ─
+	// Best-effort: a failure here does not roll back the rotation (it already
+	// committed) and does not fail this request — it only affects what the
+	// status endpoint can show until the next successful rotation.
+	if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+		if fp, fpErr := kyccrypto.FingerprintRootKEKCandidate(newRootKEK); fpErr == nil {
+			if metaErr := pgStore.SetRootKEKMetadata(fp, user.Username); metaErr != nil {
+				log.Printf("[RotateRootKEK] warning: could not persist rotation metadata: %v", metaErr)
+			}
+		}
+	}
+
+	// ── 5. Audit ───────────────────────────────────────────────────────────────
+	h.audit(r, ActionRootKEKRotate, ResourceSecurity, "root_kek", map[string]interface{}{
+		"actor":          user.Username,
+		"kek_count":      kekCount,
+		"auto_generated": autoGenerated,
+	})
+
+	// ── 6. Build response ──────────────────────────────────────────────────────
+	resp := map[string]interface{}{
+		"status":    "success",
+		"kek_count": kekCount,
+		"next_steps": []string{
+			"1. Copy new_root_kek from this response.",
+			"2. Set KYC_ROOT_KEK=<new_root_kek> in your environment / k8s secret / Vault.",
+			"3. Rolling-restart all server replicas so they boot with the new env var.",
+			"4. Verify: GET /health, then read an encrypted KYC record to confirm decryption works.",
+		},
+		"replica_warning": "This instance's in-memory root key is already updated. " +
+			"Other replicas still hold the old root and will fail KEK-dependent " +
+			"operations (KYC create/read, certificate signing) until they are restarted.",
+	}
+
+	if autoGenerated {
+		// Only include the key when we generated it — the caller must save it now.
+		// If the caller provided it, they already have it; never echo secrets back.
+		resp["new_root_kek"] = newRootKEK
+		resp["key_notice"] = "SAVE THIS VALUE NOW — it is not stored anywhere and will " +
+			"not be shown again. This is your new KYC_ROOT_KEK environment variable."
+	} else {
+		resp["new_root_kek"] = "[provided by caller — not echoed back]"
+	}
+
+	SendSuccess(w, "Root KEK rotated successfully — update env var and restart all replicas", resp)
+}
+
+// GetRootKEKStatus returns a SAFE summary of the current root KEK — never
+// the key itself, only a one-way fingerprint plus rotation history.
+//
+// GET /api/v1/security/keys/root-kek/status
+// Role: admin only
+func (h *Handlers) GetRootKEKStatus(w http.ResponseWriter, r *http.Request) {
+	if h.envelope == nil {
+		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialised")
+		return
+	}
+
+	resp := map[string]interface{}{
+		"current_fingerprint": h.envelope.RootKEKFingerprint(),
+		"source":              "environment (KYC_ROOT_KEK)",
+		"last_rotated_at":     nil,
+		"last_rotated_by":     nil,
+	}
+
+	if pgStore, ok := h.storage.(*storage.PostgresStorage); ok {
+		if keks, err := pgStore.ListKEKs(); err == nil {
+			resp["kek_count"] = len(keks)
+		}
+		if meta, found, err := pgStore.GetRootKEKMetadata(); err == nil && found {
+			resp["last_rotated_at"] = meta.RotatedAt
+			resp["last_rotated_by"] = meta.RotatedBy
+			resp["last_rotated_fingerprint"] = meta.Fingerprint
+			// Surface a clear signal if the recorded fingerprint no longer
+			// matches what's actually active — e.g. someone rotated the env
+			// var directly without using this API.
+			resp["matches_last_recorded_rotation"] = meta.Fingerprint == h.envelope.RootKEKFingerprint()
+		}
+	}
+
+	SendSuccess(w, "", resp)
+}
+
+// ValidateRootKEKRotation is a DRY-RUN check — it never mutates anything.
+// It lets the admin UI confirm both halves of a rotation BEFORE committing:
+//
+//	a) the supplied confirm_current actually matches the active root key
+//	b) (optional) the proposed new_root_kek is correctly formatted, distinct
+//	   from the current key, and shows its prospective fingerprint
+//
+// POST /api/v1/security/keys/root-kek/validate
+// Role: admin only
+func (h *Handlers) ValidateRootKEKRotation(w http.ResponseWriter, r *http.Request) {
+	if h.envelope == nil {
+		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialised")
+		return
+	}
+
+	var req rotateRootKEKRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendBadRequest(w, "invalid request body")
+		return
+	}
+	if req.ConfirmCurrent == "" {
+		SendBadRequest(w, "confirm_current is required")
+		return
+	}
+
+	resp := map[string]interface{}{}
+
+	currentOK := h.envelope.VerifyCurrentRootKEK(req.ConfirmCurrent)
+	resp["current_confirmed"] = currentOK
+
+	if req.NewRootKEK != "" {
+		fp, err := kyccrypto.FingerprintRootKEKCandidate(req.NewRootKEK)
+		if err != nil {
+			resp["new_key_valid"] = false
+			resp["new_key_error"] = err.Error()
+		} else {
+			resp["new_key_valid"] = true
+			resp["new_key_fingerprint"] = fp
+			resp["new_key_same_as_current"] = h.envelope.IsSameAsActiveRootKEK(req.NewRootKEK)
+		}
+	}
+
+	// No audit entry on success — this is a read-only check that can be
+	// called repeatedly while an admin iterates on a new key. The actual
+	// rotation attempt (and any rejection) is what gets audited.
+	SendSuccess(w, "", resp)
+}
+
+// VerifyRootKEKHealth proves end-to-end that THIS server instance's current
+// root key can decrypt real data. Call this after restarting replicas with a
+// new KYC_ROOT_KEK to confirm the rotation propagated correctly everywhere.
+//
+// GET /api/v1/security/keys/root-kek/verify-health?sample=5
+// Role: admin only
+//
+// Two checks, cheapest first:
+//
+//  1. Active KEK unwrap — proves root -> KEK works. If this fails, nothing
+//     below it can possibly work either, so we stop here.
+//  2. Sample decrypt — actually decrypts id_number on N real rows (KEK ->
+//     DEK -> PII) to prove the full chain end-to-end. Plaintext is counted,
+//     never returned in the response.
+func (h *Handlers) VerifyRootKEKHealth(w http.ResponseWriter, r *http.Request) {
+	if h.envelope == nil {
+		SendError(w, http.StatusServiceUnavailable, "envelope encryptor not initialised")
+		return
+	}
+
+	sample := 5
+	if s := r.URL.Query().Get("sample"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 50 {
+			sample = n
+		}
+	}
+
+	resp := map[string]interface{}{
+		"sample_checked": 0,
+		"sample_success": 0,
+		"sample_failed":  0,
+	}
+
+	// ── Step 1: active KEK unwrap ──────────────────────────────────────────
+	if err := h.envelope.HealthCheckActiveKEK(); err != nil {
+		resp["active_kek_ok"] = false
+		resp["active_kek_error"] = err.Error()
+		resp["overall_status"] = "broken"
+		SendSuccess(w, "", resp) // 200 — this IS the answer, not a server error
+		return
+	}
+	resp["active_kek_ok"] = true
+
+	// ── Step 2: sample decrypt across real rows ────────────────────────────
+	pgStore, ok := h.storage.(*storage.PostgresStorage)
+	if !ok {
+		resp["overall_status"] = "healthy"
+		resp["note"] = "PostgresStorage not available — skipped sample decrypt test"
+		SendSuccess(w, "", resp)
+		return
+	}
+
+	rowsToCheck, err := pgStore.SampleEncryptedKYCForHealthCheck(sample)
+	if err != nil {
+		resp["overall_status"] = "degraded"
+		resp["note"] = "could not load sample rows: " + err.Error()
+		SendSuccess(w, "", resp)
+		return
+	}
+
+	success, failed := 0, 0
+	for _, row := range rowsToCheck {
+		if _, err := h.envelope.DecryptField(row.IDNumberEnc, row.WrappedDEK, row.KEKID); err != nil {
+			failed++
+		} else {
+			success++
+		}
+	}
+
+	resp["sample_checked"] = len(rowsToCheck)
+	resp["sample_success"] = success
+	resp["sample_failed"] = failed
+
+	switch {
+	case len(rowsToCheck) == 0:
+		resp["overall_status"] = "healthy"
+		resp["note"] = "no envelope-encrypted records exist yet to sample"
+	case failed == 0:
+		resp["overall_status"] = "healthy"
+	case success > 0:
+		resp["overall_status"] = "degraded"
+	default:
+		resp["overall_status"] = "broken"
+	}
+
+	user, _ := GetUserFromContext(r)
+	actor := "unknown"
+	if user != nil {
+		actor = user.Username
+	}
+	h.audit(r, ActionRootKEKHealthCheck, ResourceSecurity, "root_kek", map[string]interface{}{
+		"actor":          actor,
+		"sample_checked": len(rowsToCheck),
+		"sample_success": success,
+		"sample_failed":  failed,
+		"overall_status": resp["overall_status"],
+	})
+
+	SendSuccess(w, "", resp)
 }
 
 // ── Integration External API ─────────────────────────────────────────────────
@@ -5009,7 +5384,7 @@ func (h *Handlers) DeleteIntegrationKey(w http.ResponseWriter, r *http.Request) 
 	SendSuccess(w, "key deleted", map[string]interface{}{"id": keyID})
 }
 
-// ==================== Suspend & Expire KYC ====================
+// ── Suspend & Expire KYC ─────────────────────────────────────────────────
 
 // SuspendKYC suspends a VERIFIED KYC record and notifies CBS via NextJS.
 // POST /api/v1/kyc/suspend

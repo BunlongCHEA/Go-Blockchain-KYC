@@ -44,6 +44,7 @@ type KEKStore interface {
 	ActivateKEK(kekID string, userID string) error // atomically deactivates others
 	RetireKEK(kekID string) error
 	ListKEKs() ([]KEKRecord, error)
+	UpdateAllKEKWrappedKeys(updates map[string]string) error // for rotation: kekID -> new wrappedKey
 }
 
 type KEKRecord struct {

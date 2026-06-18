@@ -2725,6 +2725,192 @@ func (p *PostgresStorage) ListKEKs() ([]crypto.KEKRecord, error) {
 	return out, nil
 }
 
+// ==================== KYC DEK rewrap helper (for KEK rotation) ====================
+
+type RewrapRow struct {
+	CustomerID string
+	WrappedDEK string
+	KEKID      string
+}
+
+// RewrapKYCRecord updates wrapped_dek and encryption_key_id for one KYC row
+// without touching the encrypted PII columns. Used by the KEK rotation job.
+func (p *PostgresStorage) RewrapKYCRecord(customerID, newWrappedDEK, newKEKID string) error {
+	_, err := p.db.Exec(`
+		UPDATE kyc_records
+		SET    wrapped_dek       = $2,
+		       encryption_key_id = $3,
+		       updated_at        = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE  customer_id = $1
+	`, customerID, newWrappedDEK, newKEKID)
+	return err
+}
+
+// ListKYCForRewrap returns customer_ids + current wrapped_dek + current KEK id
+// for all rows NOT yet under the target KEK.
+func (p *PostgresStorage) ListKYCForRewrap(currentKEKID string) ([]RewrapRow, error) {
+	rows, err := p.db.Query(`
+		SELECT customer_id, COALESCE(wrapped_dek, ''), COALESCE(encryption_key_id, '')
+		FROM   kyc_records
+		WHERE  (encryption_key_id IS NULL OR encryption_key_id <> $1)
+		AND    wrapped_dek IS NOT NULL
+		AND    wrapped_dek <> ''
+	`, currentKEKID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RewrapRow
+	for rows.Next() {
+		var r RewrapRow
+		if err := rows.Scan(&r.CustomerID, &r.WrappedDEK, &r.KEKID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// UpdateAllKEKWrappedKeys atomically replaces wrapped_key for every KEK row
+// supplied in updates, using a single database transaction.
+//
+// Called exclusively by crypto.EnvelopeEncryptor.RotateRootKEK.
+//
+// updates maps kek_id → new base64 AES-GCM ciphertext (wrapped under the
+// new root KEK). All rows must already exist in kek_keys — this method
+// updates, never inserts.
+//
+// If any row is missing or any UPDATE fails, the entire transaction is rolled
+// back and the original wrapped_key values are preserved.
+func (p *PostgresStorage) UpdateAllKEKWrappedKeys(updates map[string]string) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+
+	// Prepare once, execute N times (typically 1-3 rows in production).
+	stmt, err := tx.Prepare(`
+		UPDATE kek_keys
+		SET    wrapped_key = $2
+		WHERE  kek_id      = $1
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for kekID, newWrapped := range updates {
+		res, err := stmt.Exec(kekID, newWrapped)
+		if err != nil {
+			return fmt.Errorf("update KEK %s: %w", kekID, err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			// kek_id vanished between ListKEKs and the update — should never
+			// happen (no background deleter exists) but guard defensively.
+			return fmt.Errorf("KEK %s not found in kek_keys during re-wrap", kekID)
+		}
+	}
+
+	return tx.Commit()
+}
+
+const flagRootKEKMeta = "root_kek_meta"
+
+// RootKEKMeta is the JSON shape stored under the root_kek_meta system flag.
+type RootKEKMeta struct {
+	Fingerprint string `json:"fingerprint"`
+	RotatedAt   int64  `json:"rotated_at"`
+	RotatedBy   string `json:"rotated_by"`
+}
+
+// SetRootKEKMetadata records the fingerprint + actor + timestamp of the most
+// recent successful root KEK rotation. Called once, immediately after
+// crypto.EnvelopeEncryptor.RotateRootKEK returns success.
+func (p *PostgresStorage) SetRootKEKMetadata(fingerprint, rotatedBy string) error {
+	meta := RootKEKMeta{
+		Fingerprint: fingerprint,
+		RotatedAt:   time.Now().Unix(),
+		RotatedBy:   rotatedBy,
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal root KEK metadata: %w", err)
+	}
+	return p.SetSystemFlag(flagRootKEKMeta, string(b), rotatedBy)
+}
+
+// GetRootKEKMetadata returns the last recorded rotation metadata.
+// found=false means no rotation has ever been performed through this API
+// (fresh install, or the root was rotated manually outside of it).
+func (p *PostgresStorage) GetRootKEKMetadata() (*RootKEKMeta, bool, error) {
+	v, ok, err := p.GetSystemFlag(flagRootKEKMeta)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	meta := &RootKEKMeta{}
+	if err := json.Unmarshal([]byte(v), meta); err != nil {
+		return nil, false, fmt.Errorf("unmarshal root KEK metadata: %w", err)
+	}
+	return meta, true, nil
+}
+
+// KYCHealthSampleRow holds the minimal fields needed to attempt a decrypt
+// without ever returning plaintext PII to the caller.
+type KYCHealthSampleRow struct {
+	CustomerID  string
+	IDNumberEnc string
+	WrappedDEK  string
+	KEKID       string
+}
+
+// SampleEncryptedKYCForHealthCheck returns up to `limit` envelope-encrypted
+// KYC rows (rows that already have a wrapped_dek), in random order.
+//
+// Used exclusively by GET /api/v1/security/keys/root-kek/verify-health to
+// prove that real records remain decryptable after a root KEK rotation —
+// without exposing any plaintext PII in the API response.
+//
+// Scale note: ORDER BY RANDOM() is fine for the sample sizes this feature
+// uses (typically 5-20 rows) on tables up to a few hundred thousand rows.
+// For a very large kyc_records table, swap to TABLESAMPLE SYSTEM (...) for
+// better performance.
+func (p *PostgresStorage) SampleEncryptedKYCForHealthCheck(limit int) ([]KYCHealthSampleRow, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := p.db.Query(`
+		SELECT customer_id, id_number_encrypted,
+		       COALESCE(wrapped_dek, ''), COALESCE(encryption_key_id, '')
+		FROM   kyc_records
+		WHERE  wrapped_dek IS NOT NULL AND wrapped_dek <> ''
+		ORDER  BY RANDOM()
+		LIMIT  $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sample encrypted KYC rows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []KYCHealthSampleRow
+	for rows.Next() {
+		var r KYCHealthSampleRow
+		if err := rows.Scan(&r.CustomerID, &r.IDNumberEnc, &r.WrappedDEK, &r.KEKID); err != nil {
+			return nil, fmt.Errorf("scan health sample row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ==================== Signing Key Store ====================
 
 func (p *PostgresStorage) SaveSystemKey(rec *crypto.SystemKeyRecord) error {
@@ -2864,52 +3050,6 @@ func (p *PostgresStorage) ListSystemKeys() ([]*crypto.SystemKeyRecord, error) {
 	return out, nil
 }
 
-// ==================== KYC DEK rewrap helper (for KEK rotation) ====================
-
-// RewrapKYCRecord updates wrapped_dek and encryption_key_id for one KYC row
-// without touching the encrypted PII columns. Used by the KEK rotation job.
-func (p *PostgresStorage) RewrapKYCRecord(customerID, newWrappedDEK, newKEKID string) error {
-	_, err := p.db.Exec(`
-		UPDATE kyc_records
-		SET    wrapped_dek       = $2,
-		       encryption_key_id = $3,
-		       updated_at        = EXTRACT(EPOCH FROM NOW())::BIGINT
-		WHERE  customer_id = $1
-	`, customerID, newWrappedDEK, newKEKID)
-	return err
-}
-
-// ListKYCForRewrap returns customer_ids + current wrapped_dek + current KEK id
-// for all rows NOT yet under the target KEK.
-func (p *PostgresStorage) ListKYCForRewrap(currentKEKID string) ([]RewrapRow, error) {
-	rows, err := p.db.Query(`
-		SELECT customer_id, COALESCE(wrapped_dek, ''), COALESCE(encryption_key_id, '')
-		FROM   kyc_records
-		WHERE  (encryption_key_id IS NULL OR encryption_key_id <> $1)
-		AND    wrapped_dek IS NOT NULL
-		AND    wrapped_dek <> ''
-	`, currentKEKID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RewrapRow
-	for rows.Next() {
-		var r RewrapRow
-		if err := rows.Scan(&r.CustomerID, &r.WrappedDEK, &r.KEKID); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
-
-type RewrapRow struct {
-	CustomerID string
-	WrappedDEK string
-	KEKID      string
-}
-
 // ==================== User password tracking ====================
 
 // UpdatePasswordChangedAt stamps the user's password_changed_at to NOW.
@@ -2939,8 +3079,9 @@ func (p *PostgresStorage) GetPasswordChangedAt(userID string) (time.Time, error)
 	return t.Time, nil
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ==================== Integration Key Operations ====================
 
+// Helpers
 func scanIntegrationKey(row interface {
 	Scan(...interface{}) error
 }) (*models.IntegrationKey, error) {
@@ -2994,9 +3135,7 @@ const integrationKeyColumns = `
 	request_count, request_count_today, today_date,
 	scope_counts, scope_counts_today`
 
-// ─── ListIntegrationKeys ─────────────────────────────────────────────────────
 // Returns all non-deleted keys ordered newest first.
-
 func (p *PostgresStorage) ListIntegrationKeys() ([]*models.IntegrationKey, error) {
 	rows, err := p.db.Query(`
 		SELECT ` + integrationKeyColumns + `
@@ -3023,9 +3162,7 @@ func (p *PostgresStorage) ListIntegrationKeys() ([]*models.IntegrationKey, error
 	return keys, nil
 }
 
-// ─── FindIntegrationKeyByHash ────────────────────────────────────────────────
 // Hot path — called on every authenticated integration request.
-
 func (p *PostgresStorage) FindIntegrationKeyByHash(hash string) (*models.IntegrationKey, error) {
 	row := p.db.QueryRow(`
 		SELECT `+integrationKeyColumns+`
@@ -3044,9 +3181,7 @@ func (p *PostgresStorage) FindIntegrationKeyByHash(hash string) (*models.Integra
 	return k, nil
 }
 
-// ─── UpsertIntegrationKey ────────────────────────────────────────────────────
 // Insert or update a single key. key_hash is immutable after creation.
-
 func (p *PostgresStorage) UpsertIntegrationKey(k *models.IntegrationKey) error {
 	scopeJSON, _ := json.Marshal(k.ScopeCounts)
 	scopeTodayJSON, _ := json.Marshal(k.ScopeCountsToday)
@@ -3097,10 +3232,8 @@ func (p *PostgresStorage) UpsertIntegrationKey(k *models.IntegrationKey) error {
 	return err
 }
 
-// ─── SyncIntegrationKeys ─────────────────────────────────────────────────────
 // Bulk upsert in a single transaction. Mirrors syncKeys() in db.ts.
 // Does NOT delete — only soft-deletes via is_deleted flag on individual keys.
-
 func (p *PostgresStorage) SyncIntegrationKeys(keys []*models.IntegrationKey) error {
 	tx, err := p.db.Begin()
 	if err != nil {
@@ -3161,11 +3294,9 @@ func (p *PostgresStorage) SyncIntegrationKeys(keys []*models.IntegrationKey) err
 	return tx.Commit()
 }
 
-// ─── IncrementIntegrationKeyStats ────────────────────────────────────────────
 // Mirrors incrementStats() in db.ts exactly.
 // Resets today counters automatically when the date rolls over.
 // One UPDATE per gateway request — kept minimal for performance.
-
 func (p *PostgresStorage) IncrementIntegrationKeyStats(keyID, scope string) error {
 	today := time.Now().Format("Mon Jan 2 2006") // matches JS new Date().toDateString()
 
@@ -3199,8 +3330,7 @@ func (p *PostgresStorage) IncrementIntegrationKeyStats(keyID, scope string) erro
 	return err
 }
 
-// ─── SoftDeleteIntegrationKey ─────────────────────────────────────────────────
-
+// SoftDeleteIntegrationKey sets is_deleted=true and is_active=false but keeps the record for audit/history. Caller should also delete the key from the gateway config to prevent further use.
 func (p *PostgresStorage) SoftDeleteIntegrationKey(keyID string) error {
 	_, err := p.db.Exec(`
 		UPDATE integration_api_keys
@@ -3210,8 +3340,7 @@ func (p *PostgresStorage) SoftDeleteIntegrationKey(keyID string) error {
 	return err
 }
 
-// ─── GetIntegrationKeyByID ────────────────────────────────────────────────────
-
+// GetIntegrationKeyByID returns the key regardless of is_deleted or is_active status, since this is used by the admin UI which shows all keys. Returns nil if not found.
 func (p *PostgresStorage) GetIntegrationKeyByID(keyID string) (*models.IntegrationKey, error) {
 	row := p.db.QueryRow(`
 		SELECT `+integrationKeyColumns+`

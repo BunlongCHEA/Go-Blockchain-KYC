@@ -367,15 +367,35 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin)(
 				http.HandlerFunc(handlers.ListSigningKeys))))
 
-	mux.Handle("POST /api/v1/security/keys/kek/rotate",
-		middleware.Authenticate(
-			middleware.RequireRole(auth.RoleAdmin)(
-				http.HandlerFunc(handlers.RotateKEK))))
+	// mux.Handle("POST /api/v1/security/keys/kek/rotate",
+	// 	middleware.Authenticate(
+	// 		middleware.RequireRole(auth.RoleAdmin)(
+	// 			http.HandlerFunc(handlers.RotateKEK))))
 
 	mux.Handle("GET /api/v1/security/keys/kek",
 		middleware.Authenticate(
 			middleware.RequireRole(auth.RoleAdmin)(
 				http.HandlerFunc(handlers.ListKEKs))))
+
+	mux.Handle("POST /api/v1/security/keys/root-kek/rotate",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RotateRootKEK))))
+
+	mux.Handle("GET /api/v1/security/keys/root-kek/status",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.GetRootKEKStatus))))
+
+	mux.Handle("POST /api/v1/security/keys/root-kek/validate",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ValidateRootKEKRotation))))
+
+	mux.Handle("GET /api/v1/security/keys/root-kek/verify-health",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.VerifyRootKEKHealth))))
 
 	// ==================== Integration API Key Routes ====================
 	// All routes require admin or integration_service role.

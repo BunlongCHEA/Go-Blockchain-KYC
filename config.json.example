@@ -71,5 +71,9 @@
   },
   "cbs_integration": {
     "nextjs_webhook_url": "http://localhost:3000/api/integration/kyc-webhook"
+  },
+  "rabbitmq": {
+    "url":      "amqps://kyc_publisher:pass@rabbitmq:5671/kyc_vhost",
+    "exchange": "kyc.events"
   }
 }

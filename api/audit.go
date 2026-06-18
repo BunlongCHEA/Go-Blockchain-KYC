@@ -129,9 +129,13 @@ const (
 	ActionLoginFailed           = "LOGIN_FAILED"
 
 	// Key rotation
-	ActionSigningKeyRotate = "SIGNING_KEY_ROTATED"
-	ActionKEKRotate        = "KEK_ROTATED"
-	ActionKEKRewrap        = "KEK_REWRAP_COMPLETED"
+	ActionSigningKeyRotate      = "SIGNING_KEY_ROTATED"
+	ActionKEKRotate             = "KEK_ROTATED"
+	ActionKEKRewrap             = "KEK_REWRAP_COMPLETED"
+	ActionRootKEKRotate         = "ROOT_KEK_ROTATED"
+	ActionRootKEKRotateRejected = "ROOT_KEK_ROTATION_REJECTED"
+	ActionRootKEKRotateFailed   = "ROOT_KEK_ROTATION_FAILED"
+	ActionRootKEKHealthCheck    = "ROOT_KEK_HEALTH_CHECKED"
 
 	// Integration keys (API keys for external integrators)
 	ActionIntegrationKeyUpsert = "INTEGRATION_KEY_UPSERTED"

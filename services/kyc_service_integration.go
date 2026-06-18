@@ -1,76 +1,66 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
-	"Go-Blockchain-KYC/config"
 	"Go-Blockchain-KYC/models"
 	"Go-Blockchain-KYC/storage"
 )
 
 // KYCService handles KYC status change business logic and CBS notification.
 type KYCService struct {
-	storage     storage.Storage
-	cbsNotifier *CBSNotifier
+	storage   storage.Storage
+	publisher *KYCEventPublisher // nil when MQ not configured (graceful degradation)
 }
 
-// NewKYCService wires storage + CBS notifier using app config.
-// Call from main.go: services.NewKYCService(store, &cfg.CBSIntegration)
-func NewKYCService(store storage.Storage, cfg *config.CBSIntegrationConfig) *KYCService {
-	return &KYCService{
-		storage:     store,
-		cbsNotifier: NewCBSNotifier(cfg),
-	}
+func NewKYCService(store storage.Storage, publisher *KYCEventPublisher) *KYCService {
+	return &KYCService{storage: store, publisher: publisher}
 }
 
-// SuspendKYC sets a KYC record's status to SUSPENDED in both the blockchain
-// in-memory state (via storage.UpdateKYCStatus) and notifies CBS via NextJS gateway.
-//
-// Call this from the handler AFTER blockchain.SuspendKYC() succeeds.
 func (s *KYCService) SuspendKYC(customerID, verifiedBy string) error {
-	// 1. Persist status change to DB
 	if err := s.storage.UpdateKYCStatus(
-		customerID,
-		models.StatusSuspended,
-		verifiedBy,
-		time.Now().Unix(),
+		customerID, models.StatusSuspended, verifiedBy, time.Now().Unix(),
 	); err != nil {
-		return fmt.Errorf("SuspendKYC: DB update failed: %w", err)
+		return fmt.Errorf("SuspendKYC DB: %w", err)
 	}
-
-	// 2. Notify CBS via NextJS integration gateway (best-effort)
-	if notifyErr := s.cbsNotifier.NotifyStatusChange(customerID, models.StatusSuspended); notifyErr != nil {
-		// Log but do NOT fail — KYC suspend is already committed
-		log.Printf("[KYCService] WARNING: failed to notify CBS of SUSPENDED for %s: %v",
-			customerID, notifyErr)
-	}
-
+	s.publishAsync(customerID, "SUSPENDED", verifiedBy)
 	log.Printf("[KYCService] KYC SUSPENDED: customer_id=%s by=%s", customerID, verifiedBy)
 	return nil
 }
 
-// ExpireKYC sets a KYC record's status to EXPIRED in DB and notifies CBS via NextJS gateway.
-//
-// Call this from the handler or the renewal scheduler AFTER blockchain.ExpireKYC() succeeds.
 func (s *KYCService) ExpireKYC(customerID string) error {
-	// 1. Persist status change to DB
 	if err := s.storage.UpdateKYCStatus(
-		customerID,
-		models.StatusExpired,
-		"system", // expired by system / scheduler
-		time.Now().Unix(),
+		customerID, models.StatusExpired, "system", time.Now().Unix(),
 	); err != nil {
-		return fmt.Errorf("ExpireKYC: DB update failed: %w", err)
+		return fmt.Errorf("ExpireKYC DB: %w", err)
 	}
-
-	// 2. Notify CBS via NextJS integration gateway (best-effort)
-	if notifyErr := s.cbsNotifier.NotifyStatusChange(customerID, models.StatusExpired); notifyErr != nil {
-		log.Printf("[KYCService] WARNING: failed to notify CBS of EXPIRED for %s: %v",
-			customerID, notifyErr)
-	}
-
+	s.publishAsync(customerID, "EXPIRED", "system")
 	log.Printf("[KYCService] KYC EXPIRED: customer_id=%s", customerID)
 	return nil
+}
+
+// publishAsync fires and forgets — a DB-level status update must not fail
+// because MQ is temporarily unavailable.
+func (s *KYCService) publishAsync(customerID, status, actor string) {
+	if s.publisher == nil {
+		log.Printf("[KYCService] MQ publisher not configured — skipping event for %s", customerID)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// bankID is fetched from DB to avoid passing it down through every call
+		kyc, err := s.storage.GetKYC(customerID)
+		bankID := ""
+		if err == nil && kyc != nil {
+			bankID = kyc.BankID
+		}
+		if pubErr := s.publisher.PublishStatusChange(ctx, customerID, status, bankID, actor); pubErr != nil {
+			log.Printf("[KYCService] WARN MQ publish failed for %s: %v (status already committed to DB)",
+				customerID, pubErr)
+		}
+	}()
 }
