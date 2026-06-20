@@ -2,6 +2,7 @@ package storage
 
 import (
 	"Go-Blockchain-KYC/auth"
+	"Go-Blockchain-KYC/crypto"
 	"Go-Blockchain-KYC/models"
 	"time"
 )
@@ -121,4 +122,12 @@ type Storage interface {
 	// Fetches the auth.User whose customer_id == the given Go-KYC customer_id.
 	// Used to verify role=customer / is_active / is_deleted eligibility.
 	GetUserByCustomerID(customerID string) (*auth.User, error)
+
+	// MQ key operations (AES-256-GCM rotation for RabbitMQ payloads)
+	// MQ key operations (AES-256-GCM rotation for RabbitMQ payloads)
+	SaveMQKey(rec *crypto.MQKeyRecord) error
+	GetMQKey(version string) (*crypto.MQKeyRecord, error)
+	GetActiveMQKey() (*crypto.MQKeyRecord, error)
+	ActivateMQKey(version string) error
+	ListMQKeys() ([]*crypto.MQKeyRecord, error)
 }

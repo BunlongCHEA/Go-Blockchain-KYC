@@ -456,6 +456,18 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 			middleware.RequireRole(auth.RoleAdmin, auth.RoleBankAdmin)(
 				http.HandlerFunc(handlers.ExpireKYC))))
 
+	// ==================== RabbitMQ Key Management Routes
+
+	mux.Handle("POST /api/v1/security/keys/mq/rotate",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.RotateMQKey))))
+
+	mux.Handle("GET /api/v1/security/keys/mq",
+		middleware.Authenticate(
+			middleware.RequireRole(auth.RoleAdmin)(
+				http.HandlerFunc(handlers.ListMQKeys))))
+
 	// Apply global middleware
 	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
 

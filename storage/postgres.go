@@ -3478,3 +3478,124 @@ func (p *PostgresStorage) GetUserByCustomerID(customerID string) (*auth.User, er
 	}
 	return user, nil
 }
+
+// ==================== RabbitMQ Key Operations (AES-256-GCM rotation) ====================
+
+func (p *PostgresStorage) SaveMQKey(rec *crypto.MQKeyRecord) error {
+	_, err := p.db.Exec(`
+		INSERT INTO mq_keys (
+			key_version, encrypted_key, wrapping_kek_id,
+			is_active, rotation_policy_months, valid_from, valid_until,
+			created_by, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	`,
+		rec.KeyVersion, rec.EncryptedKey, rec.WrappingKEKID,
+		rec.IsActive, rec.RotationPolicyMonths, rec.ValidFrom, rec.ValidUntil,
+		rec.CreatedBy, rec.CreatedAt,
+	)
+	return err
+}
+
+func (p *PostgresStorage) GetMQKey(version string) (*crypto.MQKeyRecord, error) {
+	r := &crypto.MQKeyRecord{}
+	var validUntil, retiredAt sql.NullInt64
+	err := p.db.QueryRow(`
+		SELECT key_version, encrypted_key, wrapping_kek_id,
+		       is_active, rotation_policy_months, valid_from, valid_until, retired_at,
+		       COALESCE(created_by,''), created_at
+		FROM mq_keys WHERE key_version = $1
+	`, version).Scan(
+		&r.KeyVersion, &r.EncryptedKey, &r.WrappingKEKID,
+		&r.IsActive, &r.RotationPolicyMonths, &r.ValidFrom, &validUntil, &retiredAt,
+		&r.CreatedBy, &r.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("mq key not found: %s", version)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if validUntil.Valid {
+		r.ValidUntil = validUntil.Int64
+	}
+	if retiredAt.Valid {
+		r.RetiredAt = retiredAt.Int64
+	}
+	return r, nil
+}
+
+func (p *PostgresStorage) GetActiveMQKey() (*crypto.MQKeyRecord, error) {
+	r := &crypto.MQKeyRecord{}
+	var validUntil, retiredAt sql.NullInt64
+	err := p.db.QueryRow(`
+		SELECT key_version, encrypted_key, wrapping_kek_id,
+		       is_active, rotation_policy_months, valid_from, valid_until, retired_at,
+		       COALESCE(created_by,''), created_at
+		FROM mq_keys WHERE is_active = TRUE LIMIT 1
+	`).Scan(
+		&r.KeyVersion, &r.EncryptedKey, &r.WrappingKEKID,
+		&r.IsActive, &r.RotationPolicyMonths, &r.ValidFrom, &validUntil, &retiredAt,
+		&r.CreatedBy, &r.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if validUntil.Valid {
+		r.ValidUntil = validUntil.Int64
+	}
+	if retiredAt.Valid {
+		r.RetiredAt = retiredAt.Int64
+	}
+	return r, nil
+}
+
+func (p *PostgresStorage) ActivateMQKey(version string) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE mq_keys SET is_active = FALSE, retired_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		WHERE is_active = TRUE AND key_version <> $1
+	`, version); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE mq_keys SET is_active = TRUE, retired_at = NULL WHERE key_version = $1
+	`, version); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *PostgresStorage) ListMQKeys() ([]*crypto.MQKeyRecord, error) {
+	rows, err := p.db.Query(`
+		SELECT key_version, '' as encrypted_key, wrapping_kek_id,
+		       is_active, rotation_policy_months, valid_from, COALESCE(valid_until,0), COALESCE(retired_at,0),
+		       COALESCE(created_by,''), created_at
+		FROM mq_keys ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*crypto.MQKeyRecord
+	for rows.Next() {
+		r := &crypto.MQKeyRecord{}
+		if err := rows.Scan(
+			&r.KeyVersion, &r.EncryptedKey, &r.WrappingKEKID,
+			&r.IsActive, &r.RotationPolicyMonths, &r.ValidFrom, &r.ValidUntil, &r.RetiredAt,
+			&r.CreatedBy, &r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}

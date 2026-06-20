@@ -49,6 +49,7 @@ type Handlers struct {
 	envelope            *crypto.EnvelopeEncryptor
 	signingKeyMgr       *crypto.SigningKeyManager
 	kycService          *services.KYCService
+	mqKeyMgr            *crypto.MQKeyManager
 }
 
 // UpdateBankRequest — full or partial bank update
@@ -158,6 +159,7 @@ func NewHandlers(
 	envelope *crypto.EnvelopeEncryptor,
 	signingKeyMgr *crypto.SigningKeyManager,
 	kycService *services.KYCService,
+	mqKeyMgr *crypto.MQKeyManager,
 ) *Handlers {
 	return &Handlers{
 		blockchain:          blockchain,
@@ -171,6 +173,7 @@ func NewHandlers(
 		envelope:            envelope,
 		signingKeyMgr:       signingKeyMgr,
 		kycService:          kycService,
+		mqKeyMgr:            mqKeyMgr,
 	}
 }
 
@@ -5572,4 +5575,60 @@ func (h *Handlers) RejectKYC(w http.ResponseWriter, r *http.Request) {
 		"reason":           req.Reason,
 		"message":          "REJECT transaction added to pending pool. Mine a block to commit to blockchain.",
 	})
+}
+
+// ── RabbitMQ encryption key rotation and listing ─────────────────────────────────────────────────
+
+// RotateMQKey — admin only.
+// POST /api/v1/security/keys/mq/rotate
+// Body: { "policy_months": 6 | 12 }
+func (h *Handlers) RotateMQKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := GetUserFromContext(r)
+	if !ok {
+		SendUnauthorized(w, "user not found")
+		return
+	}
+	var req struct {
+		PolicyMonths int `json:"policy_months"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PolicyMonths == 0 {
+		SendBadRequest(w, "policy_months is required (6 or 12)")
+		return
+	}
+	if h.mqKeyMgr == nil {
+		SendError(w, http.StatusServiceUnavailable, "MQ key manager not initialized")
+		return
+	}
+
+	newVersion, err := h.mqKeyMgr.Rotate(req.PolicyMonths, user.ID)
+	if err != nil {
+		SendBadRequest(w, err.Error())
+		return
+	}
+
+	h.audit(r, "MQ_KEY_ROTATED", "SECURITY", newVersion, map[string]interface{}{
+		"policy_months": req.PolicyMonths,
+		"actor":         user.Username,
+	})
+
+	SendSuccess(w, "MQ encryption key rotated", map[string]interface{}{
+		"new_key_version": newVersion,
+		"policy_months":   req.PolicyMonths,
+		"note":            "Old key versions remain available for decrypting in-flight messages.",
+	})
+}
+
+// ListMQKeys — admin only. Returns metadata only — never raw key material.
+// GET /api/v1/security/keys/mq
+func (h *Handlers) ListMQKeys(w http.ResponseWriter, r *http.Request) {
+	if h.mqKeyMgr == nil {
+		SendError(w, http.StatusServiceUnavailable, "MQ key manager not initialized")
+		return
+	}
+	keys, err := h.mqKeyMgr.SafeList()
+	if err != nil {
+		SendInternalError(w, err.Error())
+		return
+	}
+	SendSuccess(w, "", map[string]interface{}{"keys": keys, "count": len(keys)})
 }

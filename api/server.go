@@ -89,34 +89,26 @@ func (s *Server) Start() error {
 	log.Printf("[Server] active signing key: %s", keyID)
 
 	// ── RabbitMQ publisher, Create service for CBS notifier
+	mqKeyMgr := crypto.NewMQKeyManager(pgStore, envelope)
+	defaultPolicy := s.config.RabbitMQ.GetDefaultRotationMonths() // 6 or 12, default 6
+	if _, err := mqKeyMgr.Bootstrap(defaultPolicy, "system"); err != nil {
+		return fmt.Errorf("mq key bootstrap: %w", err)
+	}
+
 	var mqPublisher *services.KYCEventPublisher
-
 	mqURL := s.config.RabbitMQ.GetAMQPURL()
-	aesKey := s.config.RabbitMQ.GetAESKey()
-	hmacKey := s.config.RabbitMQ.GetHMACKey()
-
 	if mqURL == "" {
 		log.Println("[Server] KYC_MQ_URL not set — RabbitMQ publisher disabled")
-	} else if aesKey == nil {
-		log.Println("[Server] KYC_MQ_AES_KEY not set — RabbitMQ publisher disabled")
-	} else if hmacKey == nil {
-		log.Println("[Server] KYC_MQ_HMAC_KEY not set — RabbitMQ publisher disabled")
 	} else {
 		mqCfg := &services.KYCEventPublisherConfig{
-			AMQPURL:    mqURL,
-			Exchange:   s.config.RabbitMQ.GetExchange(),
-			RoutingKey: "kyc.status.changed",
-			AESKey:     aesKey,
-			HMACKey:    hmacKey,
+			AMQPURL: mqURL, Exchange: s.config.RabbitMQ.GetExchange(), RoutingKey: "kyc.status.changed",
 		}
 		var mqErr error
-		mqPublisher, mqErr = services.NewKYCEventPublisher(mqCfg)
+		mqPublisher, mqErr = services.NewKYCEventPublisher(mqCfg, mqKeyMgr)
 		if mqErr != nil {
-			// Non-fatal: KYC status changes still commit to DB; MQ is best-effort
-			log.Printf("[Server] WARNING: RabbitMQ unavailable — KYC events DB-only: %v", mqErr)
+			log.Printf("[Server] WARNING: RabbitMQ unavailable: %v", mqErr)
 			mqPublisher = nil
 		} else {
-			log.Printf("[Server] KYC event publisher connected → exchange=%s", mqCfg.Exchange)
 			defer mqPublisher.Close()
 		}
 	}
@@ -124,7 +116,7 @@ func (s *Server) Start() error {
 	kycSvc := services.NewKYCService(s.storage, mqPublisher)
 
 	// ── Create handlers
-	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr, kycSvc)
+	handlers := NewHandlers(s.blockchain, s.authService, s.storage, s.rbac, s.verificationService, s.monitoringService, s.keyManager, s.config, envelope, signingMgr, kycSvc, mqKeyMgr)
 
 	// ── Create middleware
 	middleware := NewMiddleware(s.authService, s.rbac, s.monitoringService)

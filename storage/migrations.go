@@ -264,6 +264,21 @@ var Migrations = []string{
 		scope_counts_today  JSONB         NOT NULL DEFAULT '{}'
 	)`,
 
+	// MQ encryption key registry — AES-256-GCM keys for RabbitMQ payload encryption.
+	// Mirrors the system_keys/kek_keys rotation pattern already used for signing.
+	`CREATE TABLE IF NOT EXISTS mq_keys (
+		key_version         VARCHAR(20) PRIMARY KEY,     -- "v1", "v2", ...
+		encrypted_key        TEXT        NOT NULL,        -- AES-256 key, wrapped by KEK
+		wrapping_kek_id      VARCHAR(64) NOT NULL,
+		is_active            BOOLEAN     NOT NULL DEFAULT FALSE,
+		rotation_policy_months INT       NOT NULL DEFAULT 6,  -- 6 or 12
+		valid_from           BIGINT      NOT NULL,
+		valid_until          BIGINT,                       -- valid_from + policy months
+		retired_at           BIGINT,
+		created_by           VARCHAR(50),
+		created_at           BIGINT      NOT NULL
+	)`,
+
 	//   0 = Critical  |  1 = High  |  2 = Medium  |  3-4 = Low
 	`CREATE TABLE IF NOT EXISTS security_status (
 		id          SMALLINT    PRIMARY KEY,
@@ -322,4 +337,7 @@ var Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_keys_active_unique ON system_keys (is_active) WHERE is_active = TRUE`,
 
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_kek_keys_active_unique ON kek_keys (is_active) WHERE is_active = TRUE`,
+
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_mq_keys_active_unique ON mq_keys (is_active) WHERE is_active = TRUE`,
+	`CREATE INDEX IF NOT EXISTS idx_mq_keys_valid_until ON mq_keys(valid_until)`,
 }

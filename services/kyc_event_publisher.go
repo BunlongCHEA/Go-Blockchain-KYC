@@ -2,12 +2,11 @@
 package services
 
 import (
+	"Go-Blockchain-KYC/crypto"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,8 +39,9 @@ type KYCEventEnvelope struct {
 	MessageID  string `json:"message_id"`
 	Timestamp  int64  `json:"timestamp"`
 	EventType  string `json:"event_type"`
-	Ciphertext string `json:"ciphertext"` // base64(nonce || GCM ciphertext)
-	Signature  string `json:"signature"`  // HMAC-SHA256 over message_id+timestamp+ciphertext
+	KeyVersion string `json:"key_version"` // for key rotation
+	Ciphertext string `json:"ciphertext"`  // base64(nonce || GCM ciphertext)
+	// Signature  string `json:"signature"`  // HMAC-SHA256 over message_id+timestamp+ciphertext
 }
 
 type kycStatusPayload struct {
@@ -59,8 +59,7 @@ type KYCEventPublisher struct {
 	ch         *amqp.Channel
 	mu         sync.Mutex
 	cfg        *KYCEventPublisherConfig
-	aesKey     []byte // 32 bytes, from env KYC_MQ_AES_KEY (base64)
-	hmacKey    []byte // 32 bytes, from env KYC_MQ_HMAC_KEY (base64)
+	keyMgr     *crypto.MQKeyManager
 	exchange   string
 	routingKey string
 }
@@ -69,25 +68,15 @@ type KYCEventPublisherConfig struct {
 	AMQPURL    string // amqps://user:pass@host:5671/vhost  (TLS URI)
 	Exchange   string
 	RoutingKey string
-	AESKey     []byte // 32-byte key for AES-256-GCM
-	HMACKey    []byte // 32-byte key for HMAC-SHA256
+	// AESKey     []byte // 32-byte key for AES-256-GCM
+	// HMACKey    []byte // 32-byte key for HMAC-SHA256
 }
 
-func NewKYCEventPublisher(cfg *KYCEventPublisherConfig) (*KYCEventPublisher, error) {
-	if len(cfg.AESKey) != 32 {
-		return nil, fmt.Errorf("KYC_MQ_AES_KEY must be exactly 32 bytes")
+func NewKYCEventPublisher(cfg *KYCEventPublisherConfig, keyMgr *crypto.MQKeyManager) (*KYCEventPublisher, error) {
+	if keyMgr == nil {
+		return nil, fmt.Errorf("mq key manager is required")
 	}
-	if len(cfg.HMACKey) != 32 {
-		return nil, fmt.Errorf("KYC_MQ_HMAC_KEY must be exactly 32 bytes")
-	}
-
-	p := &KYCEventPublisher{
-		cfg:        cfg,
-		aesKey:     cfg.AESKey,
-		hmacKey:    cfg.HMACKey,
-		exchange:   cfg.Exchange,
-		routingKey: cfg.RoutingKey,
-	}
+	p := &KYCEventPublisher{cfg: cfg, keyMgr: keyMgr, exchange: cfg.Exchange, routingKey: cfg.RoutingKey}
 	if err := p.connect(); err != nil {
 		return nil, err
 	}
@@ -95,8 +84,7 @@ func NewKYCEventPublisher(cfg *KYCEventPublisherConfig) (*KYCEventPublisher, err
 }
 
 func (p *KYCEventPublisher) connect() error {
-	// amqp.DialTLS is used when AMQPURL starts with amqps://
-	conn, err := amqp.Dial(p.cfg.AMQPURL)
+	conn, err := amqp.Dial(p.cfg.AMQPURL) // amqps:// → TLS automatically
 	if err != nil {
 		return fmt.Errorf("RabbitMQ dial: %w", err)
 	}
@@ -105,102 +93,74 @@ func (p *KYCEventPublisher) connect() error {
 		conn.Close()
 		return fmt.Errorf("RabbitMQ channel: %w", err)
 	}
-	// Declare a durable topic exchange — CBS binds its queue to it.
-	if err := ch.ExchangeDeclare(
-		p.exchange, "topic", true, false, false, false, nil,
-	); err != nil {
+	if err := ch.ExchangeDeclare(p.exchange, "topic", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("exchange declare: %w", err)
 	}
-	p.conn = conn
-	p.ch = ch
+	p.conn, p.ch = conn, ch
 	return nil
 }
 
 // PublishStatusChange is called by SuspendKYC and ExpireKYC handlers.
 func (p *KYCEventPublisher) PublishStatusChange(
-	ctx context.Context,
-	customerID, kycStatus, bankID, actor string,
+	ctx context.Context, customerID, kycStatus, bankID, actor string,
 ) error {
 	payload := kycStatusPayload{
-		CustomerID: customerID,
-		KYCStatus:  kycStatus,
-		BankID:     bankID,
-		Actor:      actor,
-		ChangedAt:  time.Now().Unix(),
+		CustomerID: customerID, KYCStatus: kycStatus, BankID: bankID,
+		Actor: actor, ChangedAt: time.Now().Unix(),
 	}
-
 	plaintext, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	// ── Encrypt with AES-256-GCM ──────────────────────────────────────────
-	block, err := aes.NewCipher(p.aesKey)
+	keyVersion, key, err := p.keyMgr.GetActive()
 	if err != nil {
-		return fmt.Errorf("aes cipher: %w", err)
+		return fmt.Errorf("get active mq key: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return fmt.Errorf("gcm: %w", err)
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return fmt.Errorf("nonce: %w", err)
-	}
-	sealed := gcm.Seal(nonce, nonce, plaintext, nil) // nonce prepended
-	ciphertext := base64.StdEncoding.EncodeToString(sealed)
 
-	// ── Build outer envelope ──────────────────────────────────────────────
 	msgID := generateMessageID()
 	ts := time.Now().Unix()
+	eventType := "KYC_STATUS_CHANGED"
 
-	// ── HMAC over canonical string: message_id|timestamp|ciphertext ───────
-	mac := hmac.New(sha256.New, p.hmacKey)
-	fmt.Fprintf(mac, "%s|%d|%s", msgID, ts, ciphertext)
-	sig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	// AAD binds the envelope metadata into the GCM auth tag — tampering with
+	// ANY of these fields after encryption causes Open() to fail on the consumer.
+	aad := []byte(fmt.Sprintf("%s|%d|%s|%s", msgID, ts, eventType, keyVersion))
+
+	ciphertext, err := encryptGCM(key, plaintext, aad)
+	if err != nil {
+		return fmt.Errorf("encrypt: %w", err)
+	}
 
 	env := KYCEventEnvelope{
-		MessageID:  msgID,
-		Timestamp:  ts,
-		EventType:  "KYC_STATUS_CHANGED",
-		Ciphertext: ciphertext,
-		Signature:  sig,
+		MessageID: msgID, Timestamp: ts, EventType: eventType,
+		KeyVersion: keyVersion, Ciphertext: ciphertext,
 	}
 	body, err := json.Marshal(env)
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	// ── Publish with reconnect on channel failure ─────────────────────────
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if err := p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent, // survives broker restart
-			MessageId:    msgID,
-			Timestamp:    time.Unix(ts, 0),
-			Body:         body,
-		},
-	); err != nil {
-		// Reconnect once
-		log.Printf("[KYCEventPublisher] publish failed, reconnecting: %v", err)
-		if reconnErr := p.connect(); reconnErr != nil {
-			return fmt.Errorf("reconnect failed: %w", reconnErr)
-		}
-		return p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false,
-			amqp.Publishing{
-				ContentType:  "application/json",
-				DeliveryMode: amqp.Persistent,
-				MessageId:    msgID,
-				Timestamp:    time.Unix(ts, 0),
-				Body:         body,
-			},
-		)
+	pub := amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		MessageId:    msgID,
+		Timestamp:    time.Unix(ts, 0),
+		Body:         body,
 	}
 
-	log.Printf("[KYCEventPublisher] published %s customer=%s status=%s", msgID, customerID, kycStatus)
+	if err := p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false, pub); err != nil {
+		log.Printf("[KYCEventPublisher] publish failed, reconnecting: %v", err)
+		if reErr := p.connect(); reErr != nil {
+			return fmt.Errorf("reconnect failed: %w", reErr)
+		}
+		return p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false, pub)
+	}
+
+	log.Printf("[KYCEventPublisher] published %s customer=%s status=%s key=%s",
+		msgID, customerID, kycStatus, keyVersion)
 	return nil
 }
 
@@ -211,6 +171,25 @@ func (p *KYCEventPublisher) Close() {
 	if p.conn != nil {
 		p.conn.Close()
 	}
+}
+
+// ─── AES-256-GCM helpers ─────────────────────────────────────────────────────
+
+func encryptGCM(key, plaintext, aad []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize()) // 12 bytes
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, plaintext, aad) // nonce prepended, AAD authenticated not encrypted
+	return base64.StdEncoding.EncodeToString(sealed), nil
 }
 
 func generateMessageID() string {

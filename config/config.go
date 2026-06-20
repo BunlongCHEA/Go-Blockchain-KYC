@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -331,16 +332,16 @@ func (c *RabbitMQConfig) GetAMQPURL() string {
 	return c.URL
 }
 
-// GetAESKey decodes KYC_MQ_AES_KEY from env (base64, must be 32 bytes).
-// Returns nil when the env var is absent — caller must handle gracefully.
-func (c *RabbitMQConfig) GetAESKey() []byte {
-	return decodeMQKey("KYC_MQ_AES_KEY")
-}
+// // GetAESKey decodes KYC_MQ_AES_KEY from env (base64, must be 32 bytes).
+// // Returns nil when the env var is absent — caller must handle gracefully.
+// func (c *RabbitMQConfig) GetAESKey() []byte {
+// 	return decodeMQKey("KYC_MQ_AES_KEY")
+// }
 
-// GetHMACKey decodes KYC_MQ_HMAC_KEY from env (base64, must be 32 bytes).
-func (c *RabbitMQConfig) GetHMACKey() []byte {
-	return decodeMQKey("KYC_MQ_HMAC_KEY")
-}
+// // GetHMACKey decodes KYC_MQ_HMAC_KEY from env (base64, must be 32 bytes).
+// func (c *RabbitMQConfig) GetHMACKey() []byte {
+// 	return decodeMQKey("KYC_MQ_HMAC_KEY")
+// }
 
 // GetExchange returns the exchange name with a safe default.
 func (c *RabbitMQConfig) GetExchange() string {
@@ -366,4 +367,13 @@ func decodeMQKey(envVar string) []byte {
 		return nil
 	}
 	return b
+}
+
+func (c *RabbitMQConfig) GetDefaultRotationMonths() int {
+	v := os.Getenv("KYC_MQ_ROTATION_MONTHS")
+	if v == "6" || v == "12" {
+		n, _ := strconv.Atoi(v)
+		return n
+	}
+	return 6
 }
