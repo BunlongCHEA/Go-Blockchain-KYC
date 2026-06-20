@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -320,8 +319,9 @@ func LoadConfig(path string) (*Config, error) {
 // AES/HMAC keys come from env vars ONLY — never stored in config file.
 
 type RabbitMQConfig struct {
-	URL      string `json:"url"`      // amqps://user:pass@host:5671/vhost
-	Exchange string `json:"exchange"` // kyc.events
+	URL                   string `json:"url"`                     // amqps://user:pass@host:5671/vhost
+	Exchange              string `json:"exchange"`                // kyc.events
+	DefaultRotationMonths int    `json:"default_rotation_months"` // 6 or 12 — bootstrap only
 }
 
 // GetAMQPURL returns the broker URL or empty string if not configured.
@@ -370,10 +370,8 @@ func decodeMQKey(envVar string) []byte {
 }
 
 func (c *RabbitMQConfig) GetDefaultRotationMonths() int {
-	v := os.Getenv("KYC_MQ_ROTATION_MONTHS")
-	if v == "6" || v == "12" {
-		n, _ := strconv.Atoi(v)
-		return n
+	if c.DefaultRotationMonths == 6 || c.DefaultRotationMonths == 12 {
+		return c.DefaultRotationMonths
 	}
-	return 6
+	return 12 // safe fallback
 }

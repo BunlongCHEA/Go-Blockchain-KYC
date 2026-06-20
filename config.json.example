@@ -74,6 +74,7 @@
   },
   "rabbitmq": {
     "url":      "amqps://kyc_publisher:pass@rabbitmq:5671/kyc_vhost",
-    "exchange": "kyc.events"
+    "exchange": "kyc.events",
+    "default_rotation_months": 12
   }
 }

@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -92,29 +93,37 @@ func (m *MQKeyManager) Bootstrap(defaultPolicyMonths int, createdBy string) (str
 		log.Printf("[MQKeyManager] loaded active key %s (policy=%dmo)", rec.KeyVersion, rec.RotationPolicyMonths)
 		return rec.KeyVersion, nil
 	}
-	return m.Rotate(defaultPolicyMonths, createdBy)
+	version, _, err := m.Rotate(defaultPolicyMonths, createdBy) // discard raw key — startup bootstrap, no UI to reveal it to
+	return version, err
 }
 
-func (m *MQKeyManager) Rotate(policyMonths int, createdBy string) (string, error) {
+// Rotate generates a brand-new AES-256-GCM key, wraps it with the active KEK,
+// persists it, and atomically activates it. policyMonths must be 6 or 12.
+//
+// Returns the new version AND the raw key (base64) — the ONLY moment the
+// plaintext key is ever returned by this manager. Callers must treat the
+// returned rawKeyB64 as a one-time reveal: show/export it once, never log it,
+// never persist it outside the wrapped form already written to mq_keys.
+func (m *MQKeyManager) Rotate(policyMonths int, createdBy string) (version string, rawKeyB64 string, err error) {
 	if policyMonths != 6 && policyMonths != 12 {
-		return "", fmt.Errorf("rotation_policy_months must be 6 or 12, got %d", policyMonths)
+		return "", "", fmt.Errorf("rotation_policy_months must be 6 or 12, got %d", policyMonths)
 	}
 
 	plain := make([]byte, 32)
-	if _, err := rand.Read(plain); err != nil {
-		return "", fmt.Errorf("generate mq key: %w", err)
+	if _, err = rand.Read(plain); err != nil {
+		return "", "", fmt.Errorf("generate mq key: %w", err)
 	}
 
 	wrapped, kekID, err := m.wrapKey(plain)
 	if err != nil {
-		return "", fmt.Errorf("wrap mq key: %w", err)
+		return "", "", fmt.Errorf("wrap mq key: %w", err)
 	}
 
-	version := m.nextVersion()
+	ver := m.nextVersion()
 	now := time.Now()
 
 	rec := &MQKeyRecord{
-		KeyVersion:           version,
+		KeyVersion:           ver,
 		EncryptedKey:         wrapped,
 		WrappingKEKID:        kekID,
 		IsActive:             true,
@@ -125,22 +134,23 @@ func (m *MQKeyManager) Rotate(policyMonths int, createdBy string) (string, error
 		CreatedAt:            now.Unix(),
 	}
 
-	if err := m.store.SaveMQKey(rec); err != nil {
-		return "", fmt.Errorf("save mq key: %w", err)
+	if err = m.store.SaveMQKey(rec); err != nil {
+		return "", "", fmt.Errorf("save mq key: %w", err)
 	}
-	if err := m.store.ActivateMQKey(version); err != nil {
-		return "", fmt.Errorf("activate mq key: %w", err)
+	if err = m.store.ActivateMQKey(ver); err != nil {
+		return "", "", fmt.Errorf("activate mq key: %w", err)
 	}
 
 	m.mu.Lock()
-	m.activeVer = version
+	m.activeVer = ver
 	m.activeKey = plain
-	m.keyCache[version] = plain
+	m.keyCache[ver] = plain
 	m.mu.Unlock()
 
 	log.Printf("[MQKeyManager] rotated → %s (policy=%dmo, valid_until=%s)",
-		version, policyMonths, time.Unix(rec.ValidUntil, 0).Format("2006-01-02"))
-	return version, nil
+		ver, policyMonths, time.Unix(rec.ValidUntil, 0).Format("2006-01-02"))
+
+	return ver, base64.StdEncoding.EncodeToString(plain), nil
 }
 
 func (m *MQKeyManager) GetActive() (version string, key []byte, err error) {
@@ -205,6 +215,22 @@ func (m *MQKeyManager) SafeList() ([]MQKeySafeView, error) {
 		})
 	}
 	return out, nil
+}
+
+// GetSafeViewByVersion returns the safe (non-secret) view for one version —
+// used right after Rotate() to attach valid_from/valid_until to the
+// one-time key-material export without exposing anything new.
+func (m *MQKeyManager) GetSafeViewByVersion(version string) (*MQKeySafeView, error) {
+	views, err := m.SafeList()
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range views {
+		if v.KeyVersion == version {
+			return &v, nil
+		}
+	}
+	return nil, fmt.Errorf("version not found: %s", version)
 }
 
 func fingerprint(key []byte) string {

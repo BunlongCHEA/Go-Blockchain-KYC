@@ -5600,22 +5600,40 @@ func (h *Handlers) RotateMQKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newVersion, err := h.mqKeyMgr.Rotate(req.PolicyMonths, user.ID)
+	newVersion, rawKeyB64, err := h.mqKeyMgr.Rotate(req.PolicyMonths, user.ID)
 	if err != nil {
 		SendBadRequest(w, err.Error())
 		return
 	}
 
+	// Look up the freshly created record for accurate timestamps in the export.
+	rec, _ := h.mqKeyMgr.GetSafeViewByVersion(newVersion) // see helper added below
+
+	// Audit: note that raw key material was revealed, but NEVER log the key itself.
 	h.audit(r, "MQ_KEY_ROTATED", "SECURITY", newVersion, map[string]interface{}{
 		"policy_months": req.PolicyMonths,
 		"actor":         user.Username,
+		"key_revealed":  true,
+		"revealed_at":   time.Now().Unix(),
 	})
 
-	SendSuccess(w, "MQ encryption key rotated", map[string]interface{}{
+	resp := map[string]interface{}{
 		"new_key_version": newVersion,
 		"policy_months":   req.PolicyMonths,
 		"note":            "Old key versions remain available for decrypting in-flight messages.",
-	})
+		// One-time reveal block — present ONLY in this response.
+		"key_material": map[string]interface{}{
+			"algorithm":   "AES-256-GCM",
+			"key_base64":  rawKeyB64,
+			"key_version": newVersion,
+		},
+	}
+	if rec != nil {
+		resp["valid_from"] = rec.ValidFrom
+		resp["valid_until"] = rec.ValidUntil
+	}
+
+	SendSuccess(w, "MQ encryption key rotated — copy the key material now, it will not be shown again", resp)
 }
 
 // ListMQKeys — admin only. Returns metadata only — never raw key material.

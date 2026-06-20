@@ -90,7 +90,7 @@ func (s *Server) Start() error {
 
 	// ── RabbitMQ publisher, Create service for CBS notifier
 	mqKeyMgr := crypto.NewMQKeyManager(pgStore, envelope)
-	defaultPolicy := s.config.RabbitMQ.GetDefaultRotationMonths() // 6 or 12, default 6
+	defaultPolicy := s.config.RabbitMQ.GetDefaultRotationMonths() // 6 or 12, default 12
 	if _, err := mqKeyMgr.Bootstrap(defaultPolicy, "system"); err != nil {
 		return fmt.Errorf("mq key bootstrap: %w", err)
 	}
