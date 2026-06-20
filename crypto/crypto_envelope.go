@@ -323,3 +323,38 @@ func aesGCMDecryptBytes(key []byte, ctB64 string) ([]byte, error) {
 	nonce, body := ct[:gcm.NonceSize()], ct[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, body, nil)
 }
+
+// WrapRawKey wraps an arbitrary 32-byte key (e.g. an MQ AES-256-GCM key)
+// using the currently active KEK — same mechanism already used to wrap
+// per-record DEKs (see EncryptField/NewDEK above).
+//
+// Returns the wrapped (base64) ciphertext and the KEK ID that wrapped it.
+func (e *EnvelopeEncryptor) WrapRawKey(plain []byte) (wrapped string, kekID string, err error) {
+	kekID, err = e.ActiveKEKID()
+	if err != nil {
+		return "", "", fmt.Errorf("get active kek: %w", err)
+	}
+	kek, err := e.unwrapKEK(kekID)
+	if err != nil {
+		return "", "", fmt.Errorf("unwrap active kek: %w", err)
+	}
+	wrapped, err = aesGCMEncrypt(kek, plain)
+	if err != nil {
+		return "", "", fmt.Errorf("wrap raw key: %w", err)
+	}
+	return wrapped, kekID, nil
+}
+
+// UnwrapRawKey reverses WrapRawKey. kekID may refer to a retired (non-active)
+// KEK still kept in the store for unwrap-only access — same as DecryptField.
+func (e *EnvelopeEncryptor) UnwrapRawKey(wrapped string, kekID string) ([]byte, error) {
+	kek, err := e.unwrapKEK(kekID)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap kek %s: %w", kekID, err)
+	}
+	plain, err := aesGCMDecrypt(kek, wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap raw key: %w", err)
+	}
+	return plain, nil
+}

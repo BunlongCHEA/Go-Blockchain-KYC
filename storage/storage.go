@@ -124,7 +124,6 @@ type Storage interface {
 	GetUserByCustomerID(customerID string) (*auth.User, error)
 
 	// MQ key operations (AES-256-GCM rotation for RabbitMQ payloads)
-	// MQ key operations (AES-256-GCM rotation for RabbitMQ payloads)
 	SaveMQKey(rec *crypto.MQKeyRecord) error
 	GetMQKey(version string) (*crypto.MQKeyRecord, error)
 	GetActiveMQKey() (*crypto.MQKeyRecord, error)
