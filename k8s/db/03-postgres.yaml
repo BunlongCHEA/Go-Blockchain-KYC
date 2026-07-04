@@ -293,7 +293,7 @@ spec:
     # Allow external access via NodePort
     - from:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: 100.82.25.127/10
       ports:
         - protocol: TCP
           port: 5432
