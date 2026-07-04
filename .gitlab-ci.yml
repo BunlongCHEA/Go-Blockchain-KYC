@@ -7,6 +7,7 @@ variables:
   # CRITICAL severity blocks the pipeline. HIGH is reported but non-blocking.
   # To also block on HIGH: set TRIVY_SEVERITY to "HIGH,CRITICAL"
   TRIVY_SEVERITY: "CRITICAL"
+  TRIVY_SEVERITY_LOWER: "HIGH"
   TRIVY_EXIT_CODE: "1"            # exit 1 = fail pipeline on findings
   TRIVY_IGNORE_UNFIXED: "true"    # skip vulns with no fix yet (reduces noise)
   TRIVY_NO_PROGRESS: "true"       # cleaner CI log output
@@ -61,8 +62,33 @@ scan:
     - trivy registry login --username $CI_REGISTRY_USER --password $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - echo "Running Trivy security scan on $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA ..."
+
+    # ── 1. Full JSON report (artifact — HIGH + CRITICAL, non-blocking) ────
+    - |
+      trivy image \
+        --platform linux/arm64 \
+        --severity $TRIVY_SEVERITY,$TRIVY_SEVERITY_LOWER \
+        --exit-code 0 \
+        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
+        --no-progress=$TRIVY_NO_PROGRESS \
+        --format json \
+        --output trivy-report.json \
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
  
-    # ── 1. Table report in CI log (blocking on CRITICAL) ──────────────────
+    # ── 2. GitLab Security Dashboard format ──────────────────────────────
+    - |
+      trivy image \
+        --platform linux/arm64 \
+        --severity $TRIVY_SEVERITY,$TRIVY_SEVERITY_LOWER \
+        --exit-code 0 \
+        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
+        --no-progress=$TRIVY_NO_PROGRESS \
+        --format template \
+        --template "@/contrib/gitlab.tpl" \
+        --output gl-container-scanning-report.json \
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+    # ── 3. Table report in CI log (blocking on CRITICAL) — runs LAST ──────
     - |
       trivy image \
         --platform linux/arm64 \
@@ -71,31 +97,6 @@ scan:
         --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
         --no-progress=$TRIVY_NO_PROGRESS \
         --format $TRIVY_FORMAT \
-        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
- 
-    # ── 2. Full JSON report (artifact — HIGH + CRITICAL, non-blocking) ────
-    - |
-      trivy image \
-        --platform linux/arm64 \
-        --severity HIGH,CRITICAL \
-        --exit-code 0 \
-        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
-        --no-progress=$TRIVY_NO_PROGRESS \
-        --format json \
-        --output trivy-report.json \
-        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
- 
-    # ── 3. GitLab Security Dashboard format ──────────────────────────────
-    - |
-      trivy image \
-        --platform linux/arm64 \
-        --severity HIGH,CRITICAL \
-        --exit-code 0 \
-        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
-        --no-progress=$TRIVY_NO_PROGRESS \
-        --format template \
-        --template "@/contrib/gitlab.tpl" \
-        --output gl-container-scanning-report.json \
         $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
  
     - echo "✓ Trivy scan complete"
