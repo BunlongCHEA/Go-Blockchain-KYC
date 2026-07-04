@@ -25,8 +25,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # ==================== Production Stage ====================
 FROM alpine:3.23.3
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install runtime dependencies (apk update+upgrade first to pull patched libssl3/libcrypto3 — CVE-2026-31789)
+# The explicit pin is a safety net in case the mirror snapshot at build time
+# hasn't rolled the "latest" alias forward yet; drop it once base image >= 3.23.4.
+RUN apk update && apk upgrade --no-cache && \
+    apk add --no-cache \
+      ca-certificates \
+      tzdata \
+      "libssl3>=3.5.6-r0" \
+      "libcrypto3>=3.5.6-r0"
 
 # Create non-root user
 RUN addgroup -g 1000 appgroup && \
