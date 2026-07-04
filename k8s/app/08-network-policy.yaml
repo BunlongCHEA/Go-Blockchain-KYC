@@ -21,6 +21,15 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # Allow traffic from the frontend (different namespace — server-side
+    # NextAuth calls hit this service directly via cluster-internal DNS)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kyc-blockchain-frontend
+      ports:
+        - protocol: TCP
+          port: 8080
     # Allow traffic from same namespace
     - from:
         - podSelector: {}
