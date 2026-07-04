@@ -14,7 +14,8 @@ spec:
     directory:
       recurse: true
       # Exclude files that require CRDs not installed
-      # exclude: |
+      exclude: |
+        13-clusterissuer.yaml
       #   12-monitoring.yaml
   # Destination cluster and namespace
   destination:
