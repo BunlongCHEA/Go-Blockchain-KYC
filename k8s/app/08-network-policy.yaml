@@ -13,14 +13,14 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from Gateway
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system #gateway-system
-      ports:
-        - protocol: TCP
-          port: 8080
+    # # Allow traffic from Gateway
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: kube-system #gateway-system
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8080
     # # Allow traffic from the frontend (different namespace — server-side
     # # NextAuth calls hit this service directly via cluster-internal DNS)
     # - from:
@@ -40,12 +40,12 @@ spec:
           port: 80
         - protocol: TCP
           port: 8080
-    # Allow traffic from same namespace
-    - from:
-        - podSelector: {}
-      ports:
-        - protocol: TCP
-          port: 8080
+    # # Allow traffic from same namespace
+    # - from:
+    #     - podSelector: {}
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8080
     # Allow Prometheus scraping
     - from:
         - namespaceSelector:
