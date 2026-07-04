@@ -1,8 +1,16 @@
 # ==================== Build Stage ====================
 FROM golang:1.25.7-alpine3.23 AS builder
 
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates tzdata
+# Automatically set by buildx to match --platform (e.g. arm64 for the Pi 5).
+# Hardcoding GOARCH=amd64 here previously caused "exec format error" on the Pi.
+ARG TARGETARCH
+
+# # Install build dependencies
+# RUN apk add --no-cache git ca-certificates tzdata
+
+# Install build dependencies (apk update+upgrade first to pull patched libssl3/libcrypto3 — CVE-2026-31789)
+RUN apk update && apk upgrade --no-cache && \
+    apk add --no-cache git ca-certificates tzdata
 
 # Set working directory
 WORKDIR /app
@@ -17,7 +25,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags="-w -s -X main.Version=1.0.0 -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o /app/kyc-blockchain \
     main.go
