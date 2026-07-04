@@ -469,7 +469,7 @@ func SetupRoutes(handlers *Handlers, middleware *Middleware) http.Handler {
 				http.HandlerFunc(handlers.ListMQKeys))))
 
 	// Apply global middleware
-	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(100)(mux)))
+	handler := middleware.CORS(middleware.Logging(middleware.RateLimit(1000)(mux)))
 
 	return handler
 }
