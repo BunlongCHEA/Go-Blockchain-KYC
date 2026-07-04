@@ -1,18 +1,23 @@
-# .gitlab-ci.yml
 variables:
   DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: "/certs"
   KUBE_NAMESPACE: "kyc-blockchain"
-  
-  # # Digital Ocean K3s Configuration
-  # DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
-  # DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
+
+  # Trivy settings
+  # CRITICAL severity blocks the pipeline. HIGH is reported but non-blocking.
+  # To also block on HIGH: set TRIVY_SEVERITY to "HIGH,CRITICAL"
+  TRIVY_SEVERITY: "CRITICAL"
+  TRIVY_EXIT_CODE: "1"            # exit 1 = fail pipeline on findings
+  TRIVY_IGNORE_UNFIXED: "true"    # skip vulns with no fix yet (reduces noise)
+  TRIVY_NO_PROGRESS: "true"       # cleaner CI log output
+  TRIVY_FORMAT: "table"           # human-readable in CI log
 
 stages:
   - build
+  - scan
   - deploy
 
-# Build and Push Docker Image
+# ─── Build & Push Docker Image ────────────────────────────────────────────────
 build:
   stage: build
   image: docker:28.3.3
@@ -20,94 +25,161 @@ build:
     - docker:28.3.3-dind
   before_script:
     - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    - docker context create tls-environment
+    - docker buildx create tls-environment --use
   script:
-    - echo "Building Docker image..."
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
-    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-    - docker push $CI_REGISTRY_IMAGE:latest
-    - echo "✓ Docker image pushed successfully"
+    - echo "Building GoKYC (Go) Docker image for arm64 (Raspberry Pi 5)..."
+    - |
+      docker buildx build \
+        --platform linux/arm64 \
+        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
+        -t $CI_REGISTRY_IMAGE:latest \
+        --push \
+        .
+    - echo "✓ Docker image (arm64) pushed successfully"
   only:
     - main
     - develop
 
-# Deploy app & database to GKE using kubectl & ArgoCD
+# ─── Trivy Security Scan ──────────────────────────────────────────────────────
+# Scans the image that was just pushed.
+# Three reports are produced:
+#   1. Table in the CI log                    — immediate human-readable feedback
+#   2. trivy-report.json                      — full report (downloadable artifact)
+#   3. gl-container-scanning-report.json      — GitLab Security Dashboard format
+#
+# Scans the registry image directly so the exact artifact that will be deployed
+# is what gets scanned — no local cache or rebuild inconsistency.
+scan:
+  stage: scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]   # override so we can run shell commands
+  needs:
+    - job: build       # only runs after build succeeds
+  before_script:
+    - trivy registry login --username $CI_REGISTRY_USER --password $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Running Trivy security scan on $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA ..."
+ 
+    # ── 1. Table report in CI log (blocking on CRITICAL) ──────────────────
+    - |
+      trivy image \
+        --platform linux/arm64 \
+        --severity $TRIVY_SEVERITY \
+        --exit-code $TRIVY_EXIT_CODE \
+        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
+        --no-progress=$TRIVY_NO_PROGRESS \
+        --format $TRIVY_FORMAT \
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+ 
+    # ── 2. Full JSON report (artifact — HIGH + CRITICAL, non-blocking) ────
+    - |
+      trivy image \
+        --platform linux/arm64 \
+        --severity HIGH,CRITICAL \
+        --exit-code 0 \
+        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
+        --no-progress=$TRIVY_NO_PROGRESS \
+        --format json \
+        --output trivy-report.json \
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+ 
+    # ── 3. GitLab Security Dashboard format ──────────────────────────────
+    - |
+      trivy image \
+        --platform linux/arm64 \
+        --severity HIGH,CRITICAL \
+        --exit-code 0 \
+        --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
+        --no-progress=$TRIVY_NO_PROGRESS \
+        --format template \
+        --template "@/contrib/gitlab.tpl" \
+        --output gl-container-scanning-report.json \
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+ 
+    - echo "✓ Trivy scan complete"
+ 
+  artifacts:
+    when: always      # save reports even when scan finds issues
+    expire_in: 3d
+    paths:
+      - trivy-report.json
+      - gl-container-scanning-report.json
+    reports:
+      # Populates GitLab → Security → Container Scanning dashboard
+      container_scanning: gl-container-scanning-report.json
+ 
+  allow_failure: false  # CRITICAL findings block the deploy stage
+ 
+  only:
+    - main
+    - develop
+
+# ─── Deploy to K3s via ArgoCD ─────────────────────────────────────────────────
 deploy:
   stage: deploy
-  image: alpine/k8s:1.32.11
+  tags:
+    - pi5-1-arm64-ubuntu                         # this is the tag for job runner created
   before_script:
-    - echo "Setting up kubectl for Digital Ocean K3s..."
-    
-    # Verify base64 kubeconfig is set
-    - |
-      if [ -z "$KUBE_CONFIG_BASE64" ]; then
-        echo "ERROR: KUBE_CONFIG_BASE64 is not set!"
-        echo "Please add it to GitLab CI/CD Variables"
-        exit 1
-      fi
-    
-    # Decode base64 kubeconfig
-    - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_BASE64" | base64 -d > ~/.kube/config
-    - chmod 600 ~/.kube/config
-    
-    # Verify kubeconfig was decoded correctly
-    - |
-      if [ ! -s ~/.kube/config ]; then
-        echo "ERROR: Kubeconfig is empty after decoding!"
-        exit 1
-      fi
-    
-    - echo "✓ Kubeconfig decoded successfully"
-    
-    # Test connection
-    - echo "Testing connection to K3s cluster..."
+    - echo "Using local k3s API on the Pi - no kubeconfig copy needed"
+    - export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
     - kubectl version --client
     - kubectl cluster-info
     - kubectl get nodes
+
   script:
-    - echo "Deploying to Kubernetes..."
+    - echo "Deploying GoKYC backend to Kubernetes..."
 
-    # Create namespace if it doesn't exist
-    - kubectl create namespace kyc-blockchain --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-    # Create GitLab registry secret
     - |
       kubectl create secret docker-registry gitlab-registry \
         --docker-server=$CI_REGISTRY \
         --docker-username=$CI_REGISTRY_USER \
         --docker-password=$CI_REGISTRY_PASSWORD \
         --docker-email=$GITLAB_USER_EMAIL \
-        -n kyc-blockchain \
+        -n $KUBE_NAMESPACE \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    # Apply ArgoCD app & DB manifests for deployment
-    - echo "Applying database ArgoCD application..."
+    # ── Register both ArgoCD Applications (DB first, app depends on it) ──
+    - echo "Applying PostgreSQL ArgoCD application..."
     - kubectl apply -f k8s/argocd/db/
 
-    - echo "Applying application ArgoCD application..."
+    - echo "Applying GoKYC app ArgoCD application..."
     - kubectl apply -f k8s/argocd/app/
 
-    # Wait for ArgoCD applications to be created
     - sleep 5
 
-    # Trigger ArgoCD sync for DB
+    # ── Sync postgres first — the app reads DB creds from postgres-secret ──
     - |
-      if kubectl get application postgres -n argocd >/dev/null 2>&1; then
-        echo "Syncing postgres application..."
-        kubectl patch application postgres -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+      if kubectl get application kyc-blockchain-db -n argocd >/dev/null 2>&1; then
+        echo "Syncing kyc-blockchain-db application..."
+        kubectl patch application kyc-blockchain-db -n argocd \
+          --type merge \
+          -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
       else
-        echo "postgres application not found, skipping sync"
+        echo "kyc-blockchain-db ArgoCD application not found, skipping sync"
       fi
 
-    # Trigger ArgoCD sync for app
+    # ── Wait for postgres to actually be ready before deploying the app ──
+    - echo "Waiting for postgres-v17 StatefulSet to roll out..."
+    - |
+      kubectl rollout status statefulset/postgres-v17 \
+        -n $KUBE_NAMESPACE \
+        --timeout=180s || echo "WARNING: postgres rollout did not complete in time, continuing anyway"
+
+    # ── Sync the GoKYC application ──────────────────────────────────────
     - |
       if kubectl get application kyc-blockchain-app -n argocd >/dev/null 2>&1; then
         echo "Syncing kyc-blockchain-app application..."
-        kubectl patch application kyc-blockchain-app -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+        kubectl patch application kyc-blockchain-app -n argocd \
+          --type merge \
+          -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
       else
-        echo " kyc-blockchain-app application not found, skipping sync"
+        echo "kyc-blockchain-app ArgoCD application not found, skipping sync"
       fi
-    
+
   when: manual
   only:
     - main

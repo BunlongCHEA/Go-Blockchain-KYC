@@ -1,0 +1,114 @@
+# .gitlab-ci.yml
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  KUBE_NAMESPACE: "kyc-blockchain"
+  
+  # # Digital Ocean K3s Configuration
+  # DO_K3S_SERVER: "$DO_K3S_SERVER"  # Set in GitLab CI/CD variables
+  # DO_K3S_TOKEN: "$DO_K3S_TOKEN"    # Set in GitLab CI/CD variables
+
+stages:
+  - build
+  - deploy
+
+# Build and Push Docker Image
+build:
+  stage: build
+  image: docker:28.3.3
+  services:
+    - docker:28.3.3-dind
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - echo "✓ Docker image pushed successfully"
+  only:
+    - main
+    - develop
+
+# Deploy app & database to GKE using kubectl & ArgoCD
+deploy:
+  stage: deploy
+  image: alpine/k8s:1.32.11
+  before_script:
+    - echo "Setting up kubectl for Digital Ocean K3s..."
+    
+    # Verify base64 kubeconfig is set
+    - |
+      if [ -z "$KUBE_CONFIG_BASE64" ]; then
+        echo "ERROR: KUBE_CONFIG_BASE64 is not set!"
+        echo "Please add it to GitLab CI/CD Variables"
+        exit 1
+      fi
+    
+    # Decode base64 kubeconfig
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG_BASE64" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    
+    # Verify kubeconfig was decoded correctly
+    - |
+      if [ ! -s ~/.kube/config ]; then
+        echo "ERROR: Kubeconfig is empty after decoding!"
+        exit 1
+      fi
+    
+    - echo "✓ Kubeconfig decoded successfully"
+    
+    # Test connection
+    - echo "Testing connection to K3s cluster..."
+    - kubectl version --client
+    - kubectl cluster-info
+    - kubectl get nodes
+  script:
+    - echo "Deploying to Kubernetes..."
+
+    # Create namespace if it doesn't exist
+    - kubectl create namespace kyc-blockchain --dry-run=client -o yaml | kubectl apply -f -
+
+    # Create GitLab registry secret
+    - |
+      kubectl create secret docker-registry gitlab-registry \
+        --docker-server=$CI_REGISTRY \
+        --docker-username=$CI_REGISTRY_USER \
+        --docker-password=$CI_REGISTRY_PASSWORD \
+        --docker-email=$GITLAB_USER_EMAIL \
+        -n kyc-blockchain \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # Apply ArgoCD app & DB manifests for deployment
+    - echo "Applying database ArgoCD application..."
+    - kubectl apply -f k8s/argocd/db/
+
+    - echo "Applying application ArgoCD application..."
+    - kubectl apply -f k8s/argocd/app/
+
+    # Wait for ArgoCD applications to be created
+    - sleep 5
+
+    # Trigger ArgoCD sync for DB
+    - |
+      if kubectl get application postgres -n argocd >/dev/null 2>&1; then
+        echo "Syncing postgres application..."
+        kubectl patch application postgres -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+      else
+        echo "postgres application not found, skipping sync"
+      fi
+
+    # Trigger ArgoCD sync for app
+    - |
+      if kubectl get application kyc-blockchain-app -n argocd >/dev/null 2>&1; then
+        echo "Syncing kyc-blockchain-app application..."
+        kubectl patch application kyc-blockchain-app -n argocd --type merge -p '{"operation":{"sync":{"syncStrategy":{"apply":{"force":true}}}}}' || true
+      else
+        echo " kyc-blockchain-app application not found, skipping sync"
+      fi
+    
+  when: manual
+  only:
+    - main
+    - develop
