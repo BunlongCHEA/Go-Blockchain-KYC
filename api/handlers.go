@@ -1934,33 +1934,33 @@ func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get download directory based on OS
-	downloadDir := getDefaultDownloadDir()
+	// // Get download directory based on OS
+	// downloadDir := getDefaultDownloadDir()
 
-	// Create key directory if not exists
-	keyDir := filepath.Join(downloadDir, "kyc-blockchain-keys")
-	if err := os.MkdirAll(keyDir, 0700); err != nil {
-		SendInternalError(w, "failed to create key directory: "+err.Error())
-		return
-	}
+	// // Create key directory if not exists
+	// keyDir := filepath.Join(downloadDir, "kyc-blockchain-keys")
+	// if err := os.MkdirAll(keyDir, 0700); err != nil {
+	// 	SendInternalError(w, "failed to create key directory: "+err.Error())
+	// 	return
+	// }
 
-	// Generate file paths
-	privateKeyPath := filepath.Join(keyDir, req.KeyName+"_private. pem")
-	publicKeyPath := filepath.Join(keyDir, req.KeyName+"_public. pem")
+	// // Generate file paths
+	// privateKeyPath := filepath.Join(keyDir, req.KeyName+"_private. pem")
+	// publicKeyPath := filepath.Join(keyDir, req.KeyName+"_public. pem")
 
-	// Save private key to file
-	if err := saveKeyToFile(privateKeyPath, keyPair.PrivateKeyPEM, 0600); err != nil {
-		SendInternalError(w, "failed to save private key:  "+err.Error())
-		return
-	}
+	// // Save private key to file
+	// if err := saveKeyToFile(privateKeyPath, keyPair.PrivateKeyPEM, 0600); err != nil {
+	// 	SendInternalError(w, "failed to save private key:  "+err.Error())
+	// 	return
+	// }
 
-	// Save public key to file
-	if err := saveKeyToFile(publicKeyPath, keyPair.PublicKeyPEM, 0644); err != nil {
-		// Cleanup private key if public key fails
-		os.Remove(privateKeyPath)
-		SendInternalError(w, "failed to save public key: "+err.Error())
-		return
-	}
+	// // Save public key to file
+	// if err := saveKeyToFile(publicKeyPath, keyPair.PublicKeyPEM, 0644); err != nil {
+	// 	// Cleanup private key if public key fails
+	// 	os.Remove(privateKeyPath)
+	// 	SendInternalError(w, "failed to save public key: "+err.Error())
+	// 	return
+	// }
 
 	// Generate key ID and fingerprint
 	keyID := generateKeyID(req.KeyName)
