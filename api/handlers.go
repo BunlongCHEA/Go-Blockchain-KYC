@@ -17,8 +17,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1962,6 +1960,9 @@ func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Reque
 	// 	return
 	// }
 
+	privateKeyPath := fmt.Sprintf("client-download/%s_private.pem", req.KeyName)
+	publicKeyPath := fmt.Sprintf("client-download/%s_public.pem", req.KeyName)
+
 	// Generate key ID and fingerprint
 	keyID := generateKeyID(req.KeyName)
 	fingerprint := generateFingerprint(keyPair.PublicKeyPEM)
@@ -2006,9 +2007,9 @@ func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Reque
 		}
 
 		if err := h.storage.SaveRequesterKey(requesterInfo); err != nil {
-			// Cleanup files if database save fails
-			os.Remove(privateKeyPath)
-			os.Remove(publicKeyPath)
+			// // Cleanup files if database save fails
+			// os.Remove(privateKeyPath)
+			// os.Remove(publicKeyPath)
 			SendInternalError(w, "failed to save requester info: "+err.Error())
 			return
 		}
@@ -2043,11 +2044,11 @@ func (h *Handlers) GenerateRequesterKeyPair(w http.ResponseWriter, r *http.Reque
 			"step_3": "Sign your requests with the private key for authentication",
 			"step_4": "Key expires on " + expiresAt.Format("2006-01-02") + " - renew before expiry",
 		},
-		"files_saved": map[string]string{
-			"private_key": privateKeyPath,
-			"public_key":  publicKeyPath,
-			"directory":   keyDir,
-		},
+		// "files_saved": map[string]string{
+		// 	"private_key": privateKeyPath,
+		// 	"public_key":  publicKeyPath,
+		// 	"directory":   keyDir,
+		// },
 	})
 }
 
@@ -2107,35 +2108,35 @@ func sanitizeKeyName(name string) string {
 	return strings.ToLower(result.String())
 }
 
-// getDefaultDownloadDir returns the default download directory based on OS
-func getDefaultDownloadDir() string {
-	var downloadDir string
+// // getDefaultDownloadDir returns the default download directory based on OS
+// func getDefaultDownloadDir() string {
+// 	var downloadDir string
 
-	switch runtime.GOOS {
-	case "windows":
-		// Windows: C:\Users\<username>\Downloads
-		downloadDir = filepath.Join(os.Getenv("USERPROFILE"), "Downloads")
-	case "darwin":
-		// macOS: /Users/<username>/Downloads
-		downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
-	case "linux":
-		// Linux: /home/<username>/Downloads or XDG_DOWNLOAD_DIR
-		xdgDownload := os.Getenv("XDG_DOWNLOAD_DIR")
-		if xdgDownload != "" {
-			downloadDir = xdgDownload
-		} else {
-			downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
-		}
-	default:
-		// Fallback to home directory
-		downloadDir = os.Getenv("HOME")
-		if downloadDir == "" {
-			downloadDir = "."
-		}
-	}
+// 	switch runtime.GOOS {
+// 	case "windows":
+// 		// Windows: C:\Users\<username>\Downloads
+// 		downloadDir = filepath.Join(os.Getenv("USERPROFILE"), "Downloads")
+// 	case "darwin":
+// 		// macOS: /Users/<username>/Downloads
+// 		downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
+// 	case "linux":
+// 		// Linux: /home/<username>/Downloads or XDG_DOWNLOAD_DIR
+// 		xdgDownload := os.Getenv("XDG_DOWNLOAD_DIR")
+// 		if xdgDownload != "" {
+// 			downloadDir = xdgDownload
+// 		} else {
+// 			downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads")
+// 		}
+// 	default:
+// 		// Fallback to home directory
+// 		downloadDir = os.Getenv("HOME")
+// 		if downloadDir == "" {
+// 			downloadDir = "."
+// 		}
+// 	}
 
-	return downloadDir
-}
+// 	return downloadDir
+// }
 
 // generateKeyPair generates RSA or ECDSA key pair
 func generateKeyPair(keyType string, keySize int) (*GeneratedKeyPair, error) {
