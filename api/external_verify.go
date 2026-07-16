@@ -288,7 +288,8 @@ func decryptLegacyField(h *Handlers, ciphertext string) (string, error) {
 		return "", fmt.Errorf("empty ciphertext")
 	}
 
-	encKey := h.config.Crypto.EncryptionKey
+	// encKey := h.config.Crypto.EncryptionKey
+	encKey := h.config.Crypto.GetEncryptionKey()
 	if encKey == "" {
 		return "", fmt.Errorf("crypto.encryption_key not set — cannot decrypt legacy record")
 	}

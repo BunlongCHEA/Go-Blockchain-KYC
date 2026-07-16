@@ -47,7 +47,8 @@ func main() {
 	// Initialize authentication service
 	log.Println("\n2. Initializing Authentication Service...")
 	authService := auth.NewAuthService(
-		cfg.JWT.SecretKey,
+		// cfg.JWT.SecretKey,
+		cfg.JWT.GetSecretKey(),
 		cfg.JWT.GetTokenExpiry(),
 		cfg.JWT.GetRefreshExpiry(),
 	)

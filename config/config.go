@@ -375,3 +375,24 @@ func (c *RabbitMQConfig) GetDefaultRotationMonths() int {
 	}
 	return 12 // safe fallback
 }
+
+// GetEncryptionKey returns the legacy AES-256 encryption key.
+// ENCRYPTION_KEY env var (from the Kubernetes Secret) takes priority over
+// config.json's crypto.encryption_key, matching the k8s deployment pattern
+// where secrets are injected as env vars and the ConfigMap value stays blank.
+func (c *CryptoConfig) GetEncryptionKey() string {
+	if v := os.Getenv("ENCRYPTION_KEY"); v != "" {
+		return v
+	}
+	return c.EncryptionKey
+}
+
+// GetSecretKey returns the JWT signing key. JWT_SECRET env var (from the
+// Kubernetes Secret) takes priority over config.json's jwt.secret_key —
+// same pattern as GetRootKEK/GetEncryptionKey.
+func (j *JWTConfig) GetSecretKey() string {
+	if v := os.Getenv("JWT_SECRET"); v != "" {
+		return v
+	}
+	return j.SecretKey
+}
