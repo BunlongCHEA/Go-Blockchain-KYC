@@ -1357,6 +1357,36 @@ func (p *PostgresStorage) GetUserByUsername(username string) (*auth.User, error)
 	return user, nil
 }
 
+func (p *PostgresStorage) GetUserByID(id string) (*auth.User, error) {
+	query := `
+        SELECT id, username, email, password_hash, password_salt, role,
+               COALESCE(bank_id, ''), COALESCE(customer_id, ''), is_active,
+               COALESCE(password_change_required, TRUE), COALESCE(login_count, 0),
+               created_at, updated_at, COALESCE(last_login, '0001-01-01 00:00:00')
+        FROM users WHERE id = $1
+    `
+	user := &auth.User{}
+	var role string
+	var lastLogin time.Time
+	err := p.db.QueryRow(query, id).Scan(
+		&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.PasswordSalt,
+		&role, &user.BankID, &user.CustomerID, &user.IsActive,
+		&user.PasswordChangeRequired, &user.LoginCount,
+		&user.CreatedAt, &user.UpdatedAt, &lastLogin,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	user.Role = auth.Role(role)
+	if !lastLogin.IsZero() && lastLogin.Year() > 1 {
+		user.LastLogin = lastLogin
+	}
+	return user, nil
+}
+
 // GetAllUsers retrieves all users from the database
 func (p *PostgresStorage) GetAllUsers() ([]*auth.User, error) {
 	query := `
@@ -3325,7 +3355,7 @@ func (p *PostgresStorage) IncrementIntegrationKeyStats(keyID, scope string) erro
 				ELSE jsonb_build_object($3, 1)
 			END
 		WHERE id = $4
-	`, time.Now().UnixMilli(), today, scope, keyID)
+	`, time.Now().Unix(), today, scope, keyID)
 
 	return err
 }

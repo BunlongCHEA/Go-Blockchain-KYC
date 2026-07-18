@@ -44,17 +44,6 @@ func main() {
 	log.Println("   ✓ Key Manager initialized")
 	log.Println("   ✓ Encryptor initialized (AES-256-GCM)")
 
-	// Initialize authentication service
-	log.Println("\n2. Initializing Authentication Service...")
-	authService := auth.NewAuthService(
-		// cfg.JWT.SecretKey,
-		cfg.JWT.GetSecretKey(),
-		cfg.JWT.GetTokenExpiry(),
-		cfg.JWT.GetRefreshExpiry(),
-	)
-	log.Println("   ✓ JWT Service initialized")
-	log.Println("   ✓ RBAC initialized")
-
 	// Initialize database storage
 	log.Println("\n3. Initializing Database Storage...")
 	store, err := initializeStorage(cfg)
@@ -65,6 +54,18 @@ func main() {
 		log.Println("   ✓ PostgreSQL connection established")
 		log.Println("   ✓ Database migrations completed")
 	}
+
+	// Initialize authentication service
+	log.Println("\n2. Initializing Authentication Service...")
+	authService := auth.NewAuthService(
+		// cfg.JWT.SecretKey,
+		cfg.JWT.GetSecretKey(),
+		cfg.JWT.GetTokenExpiry(),
+		cfg.JWT.GetRefreshExpiry(),
+		store, // Pass the storage interface to AuthService
+	)
+	log.Println("   ✓ JWT Service initialized")
+	log.Println("   ✓ RBAC initialized")
 
 	// Initialize blockchain
 	log.Println("\n4. Initializing Blockchain...")

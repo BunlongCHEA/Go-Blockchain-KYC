@@ -27,6 +27,11 @@ type User struct {
 	LastLogin              time.Time `json:"last_login,omitempty"`
 }
 
+// interface avoids an import cycle with storage
+type UserLoader interface {
+	GetUserByID(id string) (*User, error)
+}
+
 // AuthService handles authentication operations
 type AuthService struct {
 	users      map[string]*User // username -> User
@@ -34,6 +39,7 @@ type AuthService struct {
 	sessions   map[string]*Session
 	jwtService *JWTService
 	mutex      sync.RWMutex
+	store      UserLoader
 }
 
 // Session represents a user session
@@ -71,12 +77,13 @@ type RegisterRequest struct {
 }
 
 // NewAuthService creates a new authentication service
-func NewAuthService(jwtSecret string, tokenExpiry, refreshExpiry time.Duration) *AuthService {
+func NewAuthService(jwtSecret string, tokenExpiry, refreshExpiry time.Duration, store UserLoader) *AuthService {
 	return &AuthService{
 		users:      make(map[string]*User),
 		usersByID:  make(map[string]*User),
 		sessions:   make(map[string]*Session),
 		jwtService: NewJWTService(jwtSecret, tokenExpiry, refreshExpiry),
+		store:      store,
 	}
 }
 
@@ -195,6 +202,13 @@ func (a *AuthService) ValidateToken(tokenString string) (*User, *Claims, error) 
 	a.mutex.RLock()
 	user, exists := a.usersByID[claims.UserID]
 	a.mutex.RUnlock()
+
+	if !exists && a.store != nil {
+		if dbUser, dbErr := a.store.GetUserByID(claims.UserID); dbErr == nil && dbUser != nil {
+			a.LoadUser(dbUser) // caches it for next time on this node too
+			user, exists = dbUser, true
+		}
+	}
 
 	if !exists {
 		return nil, nil, errors.New("user not found")

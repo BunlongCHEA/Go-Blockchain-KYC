@@ -56,6 +56,7 @@ type Storage interface {
 	UnblockUser(userID string) error
 	SaveUser(user *auth.User) error
 	GetUserByUsername(username string) (*auth.User, error)
+	GetUserByID(id string) (*auth.User, error)
 	GetAllUsers() ([]*auth.User, error)
 
 	// Recovery operations
